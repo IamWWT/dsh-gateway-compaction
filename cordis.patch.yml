@@ -60,7 +60,13 @@
           # its n_ctx).
           contextWindows:
             Qwen3.8-27B-GGUF: 262144
-            qwen3.8-27b: 369144
+            # The NInfer gateway's REAL per-call input ceiling, not its
+            # advertised context: 378144 - maxOutput 192000 - 5% margin 18908
+            # = 167236 (a larger body is rejected with context_length_exceeded
+            # before the model even starts). The old value 369144 made the
+            # chunk budget (window x chunkRatio) exceed the gateway limit, so
+            # every slice call 400'd and the rescue came back empty.
+            qwen3.8-27b: 167236
           # Per-slice input budget as a fraction of the window (0, 1].
           chunkRatio: 0.7
           # Output cap for one partial per-slice summary.
@@ -71,7 +77,7 @@
           maxChunks: 8
         # Manual commands: type /qwen38-compact in any session to compact its
         # history right now (model-summarized, keeps information), or
-        # /qwen38-new-context for a hard reset (no LLM call, instant, history
+        # /clear-context for a hard reset (no LLM call, instant, history
         # discarded — environment state untouched). Both work even in agent
         # presets that ship no compaction engine (e.g. the minimal preset).
         # The compact command's summarization call goes through this plugin's

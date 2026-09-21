@@ -32,7 +32,7 @@
 | 引擎分流(`ninModels` 跳过 `chat_template_kwargs`) | 同上 | ✅ | ✅ |
 | 超大对话分片 map-reduce 救援 | 同上 | ✅ | ✅(手动 `/qwen38-compact` 路径) |
 | 瀑布层 `reasoningEffort: off` 打标 | `ctx.on("llm/stream")` | ✅(有 compaction 调用可打标) | —(没有 compaction 调用) |
-| 手动命令 `/qwen38-compact`、`/qwen38-new-context` | `ctx.inject(["commands","tokenMeter","sessions"])` | ✅ | ✅(插件自带引擎,不依赖 preset) |
+| 手动命令 `/qwen38-compact`、`/clear-context` | `ctx.inject(["commands","tokenMeter","sessions"])` | ✅ | ✅(插件自带引擎,不依赖 preset) |
 | 自动压缩本身 | preset 组装 | ✅ | ❌(插件不注入) |
 | **minimal 自动上下文管理(80% 预警 / 98% 压缩)** | `agent/pre-step` + tokenMeter | **不适用(不触发)** | **设计确定,待实现** |
 
@@ -73,7 +73,7 @@ settings.yaml 覆盖后的 `qwen3.8-27b` 等)才会被改写,其他模型逐字�
 `ctx.inject(["commands","tokenMeter","sessions"], cb)` 依赖的是 host 服务,四个 preset
 都不组装它们(所以一定来自 host)。回调里注册的是两个**全局命令**;`/qwen38-compact`
 的处理链路由插件自行构造引擎(`dsh-compaction-basic` 的事务实现)并对 min/max 会话都可
-使用,`/qwen38-new-context` 完全不做 LLM 调用。代码注释也明确了这一意图
+使用,`/clear-context` 完全不做 LLM 调用。代码注释也明确了这一意图
 (`index.js:1313–1318`:"makes the commands visible to every session — including
 minimal-preset …")。
 
@@ -83,7 +83,7 @@ minimal-preset …")。
 
 1. 以 minimal 形状(无 compaction 服务)apply:插件不抛错,且**只注册 `llm/stream`**
    ——证明"不注入自动压缩";
-2. 同一形状下手动命令仍注册(`qwen38-compact` / `qwen38-new-context`);
+2. 同一形状下手动命令仍注册(`qwen38-compact` / `clear-context`);
 3. 命令注册依赖的是 host 服务注入,而非 preset 组装;
 4. `globalThis.fetch` 被替换(进程级);
 5. 允许模型的压缩请求体被改写(NInfer:有 `reasoning_effort: none`、**无**
@@ -119,7 +119,7 @@ minimal-preset …")。
 
 - **自动压缩只属于 standard / ptc / cordis 或 minimal 自动管理**;minimal 会话在
   自动管理实现前,要压缩请用 `/qwen38-compact`(有损保信息)或
-  `/qwen38-new-context`(秒级硬重置)。
+  `/clear-context`(秒级硬重置)。
 - **模型白名单**:新增 NInfer 模型 id 时要同时进 `models` 和 `ninModels`,否则要么不生效、
   要么会对 NInfer 误发 `chat_template_kwargs`(400)。
 - **子代理**:子代理调用走同一进程/同一 fetch,因此同样被覆盖(前提是模型 id 命中白名单)。

@@ -1,6 +1,6 @@
 {
   "name": "dsh-qwen38-gateway-compaction",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "DSH plugin (local Qwen3.8 gateways: llama.cpp/Unsloth Studio AND NInfer): thinking off for compaction-only calls via engine-appropriate wire fields (llama.cpp: chat_template_kwargs.enable_thinking; NInfer: reasoning_effort), non-thinking sampling parameters and a max_tokens floor; plus a chunked map-reduce rescue when the conversation is larger than the target model's context window (the 1M->250k model-switch 'cannot compact' case)",
   "keywords": [
     "dsh",

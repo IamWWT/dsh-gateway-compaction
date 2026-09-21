@@ -14,8 +14,11 @@ GitHub renders the Chinese [`README.md`](./README.md) by default. This English f
 | Compaction sampling + `max_tokens` floor | Implemented | Prevents client-side clamp from collapsing the summary budget |
 | Oversized-conversation chunked map-reduce rescue | Implemented | Handles compaction overflow after switching to a smaller-window model |
 | `/qwen38-compact` | Implemented | Manual model-summarized checkpoint |
-| `/qwen38-new-context` | Implemented | Manual zero-LLM hard reset to a fresh context window |
-| minimal-preset 80% warning / 98% auto-compact | Design fixed, pending implementation | Only applies to the `minimal` preset; see below |
+| `/clear-context` | Implemented | Manual zero-LLM hard reset to a fresh context window |
+| Compaction prompts visible on the settings page (read-only) | Implemented | Main instruction (dsh-compaction-basic), supplement rules, and the chunked-merge preamble are shown in the UI |
+| Compaction prompt optimization (supplement rules) | Implemented | Six supplement rules appended after the main instruction (recency weighting / verbatim fidelity / in-flight work / newest-wins conflicts / conversation-language output / no invention); toggleable; merge preamble rewritten with explicit consolidation rules |
+| Automatic overflow/pressure rescue (no built-in engine) | Implemented | Presets without a built-in compaction engine (e.g. `minimal`): proactive compaction at `thresholdRatio × window` (default 0.8), plus automatic compact-and-retry when the gateway answers with a context overflow (400). Presets that mount `dsh-compaction-basic` (e.g. standard) are never touched; an undetectable deployment is treated as "has engine" — no double compaction, ever |
+| minimal-preset 80% warning / 98% auto-compact | Implemented (folded into the row above) | 80% warning = `thresholdRatio 0.8 × window` (133788 at the 167236 window); the 98% zone is covered by the overflow "compact-then-retry" path — see "Feature 6" |
 
 ## Server-side hard limit
 
@@ -38,7 +41,7 @@ The request never enters GPU prefill and never reaches generation. The client th
 
 ## minimal-preset context policy
 
-The `minimal` preset does not assemble DSH's official `compaction-basic` auto-compaction engine. The plugin plans to add a minimal-only policy without modifying DSH source:
+The `minimal` preset does not assemble DSH's official `compaction-basic` auto-compaction engine. The plugin adds a fallback without modifying DSH source — since 2026-09-19 this has shipped as the general "automatic compaction rescue" (Feature 6 below): it applies to **any** preset without a built-in compaction engine, not just `minimal`. The original budget design is kept below for reference:
 
 ```text
 usableInputBudget = contextWindow
@@ -76,9 +79,11 @@ These ratios apply to the **usable input budget**, not to the full 378144-token 
 | 80% warning | Auto check before each `minimal` step | minimal only | No | Logs current input tokens, budget, and remaining headroom; no session change | Trusted token meter and model window |
 | 98% auto summary compaction | Auto check before each `minimal` step | minimal only | Yes | Summarizes old history into a checkpoint, retains recent context; chunked for oversized input | Compaction engine loadable; agent maintainable |
 | `/qwen38-compact` | User types the command | All presets incl. minimal | Yes | Lossy but information-preserving summary compaction | Command enabled; agent idle; `dsh-compaction-basic` resolvable |
-| `/qwen38-new-context` | User types the command | All presets incl. minimal | No | Instant fresh model-visible window; old visible history dropped, raw event log kept | Agent idle; resetable history exists |
+| `/clear-context` | User types the command | All presets incl. minimal | No | Instant fresh model-visible window; old visible history dropped, raw event log kept | Agent idle; resetable history exists |
 
 The automatic policy never performs a hard reset by itself. Hard reset drops model-visible history and is reserved for explicit manual confirmation.
+
+> Note: since 2026-09-19 the "80% warning" and "98% auto-compact" rows above have been implemented by "Feature 6: automatic compaction rescue" — the 80% line is `thresholdRatio (0.8) × window`, and the 98% zone is covered by the overflow "compact → retry" path. The scope extends from `minimal` to any preset without a built-in compaction engine.
 
 ### Budget source priority
 
@@ -123,11 +128,46 @@ If the body cannot be parsed safely, the model window is unknown, the slice coun
 
 Model summarization compaction. It replaces the compactable history with a summary checkpoint, preserving as much task information as possible, but summaries remain lossy and local 27B runs can be slow.
 
-### 4. `/qwen38-new-context`
+### 4. `/clear-context`
 
 A local manual counterpart of the Codex hard-rollover direction: no LLM call, a fixed short marker replaces the current model-visible surface. The raw session event log stays on disk; files, git, running services, and external state are untouched.
 
 Use it when task state already lives in code, files, git, or databases. Do not use it for Q&A that depends on the full conversation.
+
+### 5. Compaction prompts on the settings page (read-only)
+
+Summary quality is determined by the prompt text sent to the model. Until now that text lived only in the harness source and in this plugin's code. The settings page (both the settings plugin card and the 0.1.6+ sidebar plugins page) now has a read-only "Compaction prompts" disclosure with three blocks:
+
+- **Main compaction instruction** — from the official `dsh-compaction-basic` engine (harness source); the page shows a reference copy (source and harness version labeled). The plugin re-verifies its first line on every compaction and warns if the running harness no longer matches.
+- **Supplement rules** — six plugin-provided rules appended after the main instruction (on by default, toggleable). They target measured weaknesses of the stock instruction on long sessions: (1) recency weighting, (2) verbatim fidelity for paths/commands/ports/values, (3) in-flight task state (done / remaining / next action), (4) newest statement wins on conflicts, (5) output in the conversation's dominant language (overrides the stock "English prose" rule; code/paths/identifiers stay verbatim), (6) never invent content. They are sent on the single-shot call, every chunked slice, and the final merge. Design informed by agentscope-style compaction/consolidation prompts.
+- **Chunked-merge preamble** — the fixed preamble this plugin adds when chunked rescue fires, now with explicit consolidation rules (later slices win on conflict, dedupe, union of facts, Current Work/Next Step from the last slice, never drop a section), shown verbatim.
+
+The display is read-only: editing prompt text requires a harness / plugin code change. The plugin-side texts are guarded by `test/prompt-sync.mjs`, which asserts they stay byte-identical to what the host actually sends.
+
+### 6. Automatic compaction rescue (no built-in engine)
+
+Some presets (e.g. `minimal`) do not mount DSH's official `dsh-compaction-basic` engine: nobody then watches the context pressure, and once the gateway answers `context_length_exceeded` (400), the whole turn fails. This feature gives those presets a recovery path, while **never interfering with presets that have a built-in engine** (presets such as `standard` that mount `dsh-compaction-basic` behave exactly as before — that is the acceptance criterion):
+
+- **Pressure warning** — before each step, the plugin drives its own `auto: false` engine instance (driven imperatively, never self-registered) and compacts proactively when context reaches `thresholdRatio × window` (default 0.8; the window comes from your "context window" settings, or is resolved automatically), defusing pressure before the gateway can complain.
+- **Overflow recovery** — when the gateway reports a context-window overflow (400), the session is compacted and the request retried; per-session retries are capped by `maxOverflowRetries` (default 1) so a 400 cannot loop.
+- **Ownership detection (never double-compact)** — rescue only fires when the preset demonstrably lacks a built-in engine: the app-level `compaction` service is checked first, then the preset's composition inventory is scanned for a `@deepseek-ai/dsh-compaction-basic` row. Any undecidable case is treated as "has engine" — a missed rescue leaves the original 400 on the surface, a false one would burn GPU on double compaction.
+- **Fail-open everywhere** — every guard passes the event through unchanged on error; rescue summaries go through this plugin's wire layers (thinking-off + sampling apply), and a rescue call that still overflows falls back to chunked rescue.
+
+Configuration (all optional; the defaults are exactly the values below, editable on the settings page under "Automatic overflow rescue" and in Advanced):
+
+```yaml
+qwen38-gateway-compaction:
+  autoCompaction:
+    enabled: true        # default true; false disables the whole feature
+    thresholdRatio: 0.8  # pressure threshold, as a fraction of the effective window
+    # retainRatio: 0.16      # recent share to keep (mutually exclusive with retainTokens)
+    # retainTokens: 2000     # or a fixed number of recent tokens (takes precedence)
+    # summarizationProvider: ""  # empty = inherit the session's model
+    # summarizationModel: ""
+    # maxTokens: 8192
+    # compactionRetries: 1
+    # maxOverflowRetries: 1
+```
 
 ## Configuration
 
@@ -156,8 +196,8 @@ qwen38-gateway-compaction:
     mergeMaxTokens: 16384
     maxChunks: 8
 
-  # minimal-only policy; design config, active once the corresponding
-  # implementation version is installed.
+  # Design placeholder (not implemented): the minimal-only budget policy.
+  # The actual fallback is provided by autoCompaction below (Feature 6).
   minimalContext:
     enabled: true
     warningRatio: 0.8
@@ -172,6 +212,18 @@ qwen38-gateway-compaction:
     enabled: true
     newContext:
       enabled: true
+
+  # Automatic compaction rescue (on by default; this whole block may be
+  # omitted — every value below is a default).
+  autoCompaction:
+    enabled: true
+    thresholdRatio: 0.8
+    # retainRatio: 0.16
+    # summarizationProvider: ""
+    # summarizationModel: ""
+    # maxTokens: 8192
+    # compactionRetries: 1
+    # maxOverflowRetries: 1
 ```
 
 `warningRatio`, `autoCompactRatio`, `safetyMarginRatio`, and the per-model window/max-output settings should be editable in the settings page. Constraints:
@@ -230,6 +282,8 @@ node test/integration-fetch.mjs
 node test/preset-applicability.mjs
 node test/rescue-e2e.mjs
 node test/client-smoke.mjs
+node test/auto-rescue.mjs
+node test/prompt-sync.mjs
 ```
 
 ## License

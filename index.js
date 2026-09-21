@@ -73,8 +73,11 @@
  * call AND whose `model` field is in `models`, it merges
  * `chat_template_kwargs.enable_thinking = false` (preserving any other
  * template kwargs), writes the configured `reasoning_effort` wire value,
- * applies the configured `sampling` entries, and raises the output cap to the
- * floor.
+ * applies the configured `sampling` entries, raises the output cap to the
+ * floor, and — when `supplementOn` is enabled (default) — appends this
+ * plugin's `SUMMARY_SUPPLEMENT` after the official main instruction. That
+ * single append point is what the chunked rescue reuses: its slice and merge
+ * calls inherit the supplemented final user message verbatim.
  *
  * Layer 3 (HTTP max_tokens floor): pi-ai clamps every request's `max_tokens`
  * client-side (`clampMaxTokensToContext`): it estimates the context size from
@@ -111,10 +114,11 @@
  * own `max_tokens` is left exactly as set (the floor is compaction-only).
  *
  * Layer 5 (HTTP oversized-compaction rescue, feature 2): after layer 2 has
- * rewritten a compaction body, this layer estimates the prompt size of that
- * body. When it exceeds `chunkRatio × contextWindows[model]` and chunking is
- * enabled for that model, the wrapper does NOT forward the original request.
- * Instead it:
+ * rewritten a compaction body, this layer estimates the prompt's size. When
+ * it exceeds the per-call budget for the request's model — the window set on
+ * the settings page, or auto-resolved (feature 2b: live gateway probe, then
+ * the model's declaration in the dsh model config) — the wrapper does NOT
+ * forward the original request. Instead it:
  *   - splits the message range into consecutive slices whose estimated input
  *     fits under the per-call budget (leading system/developer messages are
  *     re-sent with every slice; a `tool`-role message is never left orphaned
@@ -123,10 +127,12 @@
  *     untouched);
  *   - summarizes each slice sequentially with `stream: false`, thinking off,
  *     the configured sampling, and `max_tokens = chunkMaxTokens` (each slice
- *     call receives the conversation's own final compaction instruction
- *     verbatim as its last user message);
- *   - merges the partial checkpoints in one final call (partials wrapped in
- *     `<compacted-summary>` tags, same final instruction) with
+ *     call receives the conversation's own final compaction instruction —
+ *     including this plugin's supplement when enabled — verbatim as its last
+ *     user message);
+ *   - merges the partial checkpoints in one final call (`MERGE_PREAMBLE`
+ *     consolidation rules, partials wrapped in `<compacted-summary>` tags,
+ *     same final instruction) with
  *     `max_tokens = mergeMaxTokens`;
  *   - returns the merged checkpoint to dsh as a standard OpenAI response — an
      SSE stream with periodic keep-alive pings when the original request was
@@ -142,6 +148,35 @@
  * logged. Pre-commit guards (unknown model window, more slices than
  * `maxChunks`, unparseable body) fail open by forwarding the original request
  * untouched.
+ *
+ * Feature 5 (automatic overflow rescue, this release): presets whose agent
+ * composition ships no active dsh-compaction-basic engine (the minimal preset,
+ * or any user preset without the compaction group) have NO built-in recovery
+ * for a context-overflow 400 — the request error surfaces to the user as-is.
+ * This plugin closes that gap by driving its own dsh-compaction-basic
+ * instance (constructed with `auto: false`, so it registers none of the
+ * official event listeners and is never registered as the `compaction`
+ * service — the exact detached-context trick the manual commands use) from
+ * two agent-loop waterfalls:
+ *   - `agent/pre-step`: pressure pre-compaction at thresholdRatio of the
+ *     model's context window (the plugin's `contextWindows` map refines the
+ *     discovery value, so the 80% warning fires on the window the gateway
+ *     really runs, not the larger n_ctx it declares);
+ *   - `agent/request-error`: canonical context-overflow recovery
+ *     (`failure.code === 'CONTEXT_WINDOW_EXCEEDED'`, the normalized form of
+ *     the 400 a llama.cpp/NInfer gateway raises when the request exceeds
+ *     the window): compact, then return `{ kind: 'retry' }` so the agent
+ *     loop re-issues the request against the reduced surface. The retry
+ *     budget per agent is `autoCompaction.maxOverflowRetries` (default 1)
+ *     and resets on agent idle or the next assistant message — the same
+ *     bookkeeping the official engine uses for its own recovery.
+ * Sessions whose preset DOES mount an active dsh-compaction-basic are left
+ * to that engine: the plugin detects the built-in through the app-level
+ * `compaction` service or the agent preset's composition inventory and then
+ * acts only as a fail-open fallback (at most one extra, budgeted recovery
+ * per failure). The rescue engine's summarization calls flow through this
+ * plugin's wire layers (1–5), so thinking-off, sampling, the max_tokens
+ * floor and the oversized chunked rescue all apply to its summaries too.
  *
  * Identity for layers 2+3+5 is the compaction engine's own instruction:
  * dsh-compaction-basic appends it as the FINAL user message of every
@@ -278,9 +313,12 @@ const ChunkingConfig = z.object({
   enabled: z.boolean().default(DEFAULT_CHUNKING_ENABLED),
   /**
    * Exact model id → context window (tokens) used to decide when a compaction
-   * prompt is too large for one call. Models absent from this map are NEVER
-   * chunked (the rescue fails open to the original single-shot behavior).
-   * Default `{}`.
+   * prompt is too large for one call. An explicit entry is used AS-IS and
+   * outranks every auto source. Models absent from this map are resolved
+   * automatically (feature 2b): live `GET {gateway}/v1/models` probe, then the
+   * model's declaration in the dsh model config (settings.yaml, via the llm
+   * service) — so a mid-task switch to a smaller-window model works without
+   * touching this map. Default `{}`.
    */
   contextWindows: z.dict(z.number()).default({}),
   /** Per-slice input budget as a fraction of the model window, in (0, 1]. Default `0.7`. */
@@ -300,7 +338,7 @@ const ChunkingConfig = z.object({
  * compaction engine at all (e.g. the minimal preset), where neither automatic
  * compaction nor the built-in `/compact` exist.
  *
- * The optional `/qwen38-new-context` command (feature 4, after Codex's
+ * The optional `/clear-context` command (feature 4, after Codex's
  * token-budget hard-rollover direction) does the same transaction with a
  * TEMPLATE summarizer: no LLM call, instant, zero token cost — the surface is
  * replaced by a fixed marker and the model continues from environment state.
@@ -308,10 +346,40 @@ const ChunkingConfig = z.object({
 const CommandConfig = z.object({
   /** Master switch for the `/qwen38-compact` command. Default `true`. */
   enabled: z.boolean().default(true),
-  /** The `/qwen38-new-context` hard-reset command. Default `{ enabled: true }`. */
+  /** The `/clear-context` hard-reset command. Default `{ enabled: true }`. */
   newContext: z.object({
     enabled: z.boolean().default(true)
   }).default({})
+});
+
+/**
+ * Automatic overflow/pressure rescue config (feature 5). The plugin drives its
+ * own dsh-compaction-basic instance (auto: false) for agents whose preset
+ * ships no active built-in compaction engine. All keys mirror the engine's
+ * own config keys (thresholdRatio/retainRatio/retainTokens/...), so a
+ * settings.yaml author can port a preset's compaction block over verbatim.
+ * `retainRatio` and `retainTokens` are mutually exclusive exactly as in the
+ * engine (pass at most one; `retainTokens` wins if both are set).
+ */
+const AutoCompactionConfig = z.object({
+  /** Master switch for the automatic rescue. Default `true`. */
+  enabled: z.boolean().default(true),
+  /** Pressure threshold as a fraction of the model context window. Default `0.8`. */
+  thresholdRatio: z.number().default(0.8),
+  /** Verbatim-tail fraction (mutually exclusive with `retainTokens`). */
+  retainRatio: z.number(),
+  /** Verbatim-tail budget in tokens (mutually exclusive with `retainRatio`). */
+  retainTokens: z.number().step(1).min(0),
+  /** Summarization route; empty pair = inherit the conversation's own model. */
+  summarizationProvider: z.string().default(""),
+  /** Summarization model; empty = inherit the conversation's own model. */
+  summarizationModel: z.string().default(""),
+  /** Output budget for the summary call. Default `8192`. */
+  maxTokens: z.number().default(8192),
+  /** Summary re-attempts while still over the pressure threshold. Default `1`. */
+  compactionRetries: z.number().default(1),
+  /** Overflow-retry budget per agent before the 400 is surfaced. Default `1`. */
+  maxOverflowRetries: z.number().default(1)
 });
 
 /** Plugin config (all keys optional; defaults applied by the schema). */
@@ -361,10 +429,27 @@ const Config = z.object({
    * touched. Default `true`.
    */
   enableThinkingOff: z.boolean().default(true),
+  /**
+   * When true, the plugin appends its supplementary requirements
+   * (`SUMMARY_SUPPLEMENT`) after the official dsh-compaction-basic main
+   * instruction on every matched compaction call — the single-shot call
+   * (layer 2) and, via the rewritten final user message, each per-slice
+   * call and the final merge of the chunked rescue. Design references:
+   * agentscope-harness ConversationCompactor / MemoryConsolidator (recency
+   * weighting, verbatim fidelity, latest-wins conflict rule, conversation
+   * language output). When false, the official instruction is used
+   * untouched. Default `true`.
+   */
+  supplementOn: z.boolean().default(true),
   /** Oversized-compaction rescue policy (feature 2); see ChunkingConfig. */
   chunking: ChunkingConfig.default({}),
-  /** Manual commands (`/qwen38-compact`, `/qwen38-new-context`); see CommandConfig. */
-  command: CommandConfig.default({})
+  /** Manual commands (`/qwen38-compact`, `/clear-context`); see CommandConfig. */
+  command: CommandConfig.default({}),
+  /**
+   * Automatic overflow/pressure rescue for presets without a built-in
+   * compaction engine (feature 5); see AutoCompactionConfig.
+   */
+  autoCompaction: AutoCompactionConfig.default({})
 });
 
 /** Settings namespace carrying this plugin's policy (plain string; both dsh-settings generations validate the same kebab-case pattern). */
@@ -387,6 +472,61 @@ export const COMPACTION_SIGNATURE = "You are now acting as a compaction engine f
  */
 export const TITLE_SIGNATURE = "Create a concise title for an AI coding-assistant session from the supplied human messages";
 
+/**
+ * First line of the supplementary block below; used as the idempotency
+ * marker so a body that already carries the supplement (retries, the L5
+ * internal calls reusing the rewritten final message) is never double-appended.
+ */
+export const SUPPLEMENT_MARKER =
+  "Additional compaction requirements (appended by dsh-qwen38-gateway-compaction";
+
+/**
+ * Supplementary compaction requirements appended by this plugin AFTER the
+ * official dsh-compaction-basic main instruction (feature: prompt
+ * optimization, design informed by agentscope-harness's ConversationCompactor
+ * / MemoryConsolidator prompts). Targets the measured weaknesses of the
+ * stock instruction on long, multi-day coding sessions:
+ *   - no recency weighting (oldest and newest material compressed equally),
+ *   - no explicit "latest statement wins" conflict rule (chunked merges
+ *     otherwise blend contradictory states),
+ *   - the English-only output rule hurts Chinese-conversation checkpoints,
+ *   - no hard rule against inventing content in empty sections.
+ * Applied when `supplementOn` is true: layer 2 appends it to the final user
+ * message of the single-shot compaction call, and the chunked path inherits
+ * it on every per-slice call and the final merge (they reuse the rewritten
+ * final user message verbatim). The main instruction is never replaced —
+ * only extended — so the harness's structure contract (eight sections)
+ * stays in force.
+ */
+export const SUMMARY_SUPPLEMENT = [
+  SUPPLEMENT_MARKER + " plugin; where these conflict with the instruction above, THESE RULES WIN):",
+  "",
+  "1. Recency weighting: weight the most recent exchanges most heavily. Compress older material more aggressively, but never drop a decision, constraint, correction, or open question that still applies.",
+  "2. Verbatim fidelity: preserve exact file paths, commands, ports and numeric values, identifiers, and error strings; quote the user's own words for instructions and corrections.",
+  "3. In-flight work: for every task still in progress, state exactly what is done, what remains, and the single concrete next action.",
+  "4. Conflict resolution: when facts conflict, the most recent statement wins; keep a superseded value only when the change itself matters.",
+  "5. Language (OVERRIDES the 'concise English prose' rule above): write the checkpoint in the conversation's dominant language; keep code, paths, commands, and identifiers verbatim.",
+  "6. Never invent facts that are not present in the conversation; if a section has no content, write \"(none)\"."
+].join("\n");
+
+/**
+ * Preamble of the map-reduce MERGE call (feature 2). Replaces the old one-line
+ * "split into N parts" framing: the partial checkpoints are lossy and may
+ * disagree, so the merge step needs explicit consolidation rules (recency
+ * wins, dedupe, union of facts, end-state for Current Work/Next Step) on top
+ * of the main instruction that follows the partials.
+ */
+export const MERGE_PREAMBLE = [
+  "The original conversation was too large to summarize in a single pass, so it was split into consecutive parts and each part was summarized separately. The partial checkpoints below are in chronological order. Merge them into the single final checkpoint.",
+  "",
+  "Merging rules:",
+  "- Later parts are MORE recent: on any conflict, the most recent partial wins.",
+  "- Deduplicate: state each fact once, in its most complete form.",
+  "- Union of facts: a fact from any part survives unless a later partial supersedes it.",
+  "- \"Current Work\" and \"Next Step\" must describe the state at the END of the conversation (the last partial), not an earlier point.",
+  "- Keep every section of the required structure; never drop a section."
+].join("\n");
+
 /** Marks the wrapped global fetch so `apply` never double-wraps. */
 const FETCH_WRAPPER_MARK = Symbol.for("qwen38-gateway-compaction.fetch-wrapper");
 
@@ -395,7 +535,11 @@ const FETCH_WRAPPER_MARK = Symbol.for("qwen38-gateway-compaction.fetch-wrapper")
  * (in-process profile reload) never leaves the installed wrapper pointing at
  * a stale config.
  */
-let policySource = () => ({ entries: [], floor: 0, wireReasoning: "", enableThinkingOff: false, models: [], ninModels: new Set(), chunking: null });
+let policySource = () => ({
+  entries: [], floor: 0, wireReasoning: "", enableThinkingOff: false, supplementOn: true,
+  models: [], ninModels: new Set(), chunking: null,
+  autoCompaction: autoCompactionEngineConfig({})
+});
 
 /**
  * Numeric sampling entries from one resolved config, in wire-key order.
@@ -416,6 +560,45 @@ function positiveInt(value, fallback) {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
 }
 
+/** Coerce a config number to a finite non-negative integer, or `fallback`. */
+function nonNegativeInt(value, fallback) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : fallback;
+}
+
+/**
+ * Map the resolved `autoCompaction` section (feature 5) onto the engine
+ * constructor arguments. Pure: settings object in, engine config out.
+ * `auto` is ALWAYS false — the plugin drives the instance imperatively from
+ * its own event listeners (see `registerAutoRescue`), never the engine's
+ * built-in auto registration. `retainTokens` outranks `retainRatio` (the
+ * engine rejects both at once). All invalid/missing scalars fall back to the
+ * engine's own defaults so a partial settings.yaml section never breaks the
+ * rescue.
+ * @param raw - the `autoCompaction` section (or a partial one).
+ * @returns `{ enabled: false }` or `{ enabled: true, engineConfig }`.
+ */
+export function autoCompactionEngineConfig(raw) {
+  const source = raw !== null && typeof raw === "object" ? raw : {};
+  if (source.enabled === false) return { enabled: false };
+  const engineConfig = {
+    auto: false,
+    thresholdRatio: typeof source.thresholdRatio === "number" && Number.isFinite(source.thresholdRatio) && source.thresholdRatio > 0
+    ? source.thresholdRatio
+    : 0.8,
+    summarizationProvider: typeof source.summarizationProvider === "string" ? source.summarizationProvider : "",
+    summarizationModel: typeof source.summarizationModel === "string" ? source.summarizationModel : "",
+    maxTokens: positiveInt(source.maxTokens, 8192),
+    compactionRetries: nonNegativeInt(source.compactionRetries, 1),
+    maxOverflowRetries: nonNegativeInt(source.maxOverflowRetries, 1)
+  };
+  if (typeof source.retainTokens === "number" && Number.isFinite(source.retainTokens) && source.retainTokens >= 0) {
+    engineConfig.retainTokens = Math.floor(source.retainTokens);
+  } else if (typeof source.retainRatio === "number" && Number.isFinite(source.retainRatio) && source.retainRatio > 0) {
+    engineConfig.retainRatio = source.retainRatio;
+  }
+  return { enabled: true, engineConfig };
+}
+
 /**
  * The active HTTP-layer policy from one resolved config: the sampling
  * entries, an enabled max_tokens floor (0 = disabled), the `reasoning_effort`
@@ -429,6 +612,7 @@ function policyOf(config) {
   const floor = typeof floorRaw === "number" && Number.isFinite(floorRaw) && floorRaw > 0 ? Math.floor(floorRaw) : 0;
   const wireReasoning = typeof config?.wireReasoning === "string" ? config.wireReasoning : "";
   const enableThinkingOff = config?.enableThinkingOff === true;
+  const supplementOn = config?.supplementOn !== false; // default true
   const models = Array.isArray(config?.models)
     ? config.models.filter((m) => typeof m === "string" && m.length > 0)
     : [];
@@ -455,7 +639,11 @@ function policyOf(config) {
       };
     }
   }
-  return { entries: samplingEntries(config?.sampling), floor, wireReasoning, enableThinkingOff, models, ninModels, chunking };
+  return {
+    entries: samplingEntries(config?.sampling), floor, wireReasoning, enableThinkingOff,
+    supplementOn, models, ninModels, chunking,
+    autoCompaction: autoCompactionEngineConfig(config?.autoCompaction)
+  };
 }
 
 /**
@@ -539,8 +727,10 @@ export function applyThinkingOff(body, policy) {
 /**
  * Rewrite `init.body` in place when `init` carries the JSON chat-completion
  * body of a compaction summarization call FOR AN ALLOWED MODEL: write the
- * thinking-off wire fields, apply the sampling entries, and raise the output
- * cap to the floor. Every guard is conservative: any shape mismatch, parse
+ * thinking-off wire fields, apply the sampling entries, raise the output
+ * cap to the floor, and — when `supplementOn` is enabled — append this
+ * plugin's supplementary requirements after the official main instruction
+ * (which the chunked rescue then reuses on every slice and the merge). Every guard is conservative: any shape mismatch, parse
  * failure, missing signature, or disallowed model leaves the request
  * untouched.
  * @param init - the fetch init holding the stringified JSON body.
@@ -552,7 +742,7 @@ export function rewriteCompactionBody(init, policy) {
   const entries = Array.isArray(policy.entries) ? policy.entries : [];
   const floor = typeof policy.floor === "number" && Number.isFinite(policy.floor) && policy.floor > 0 ? policy.floor : 0;
   const models = Array.isArray(policy.models) ? policy.models : [];
-  if (entries.length === 0 && floor === 0 && !thinkingOffActive(policy)) return false;
+  if (entries.length === 0 && floor === 0 && !thinkingOffActive(policy) && policy.supplementOn !== true) return false;
   if (models.length === 0) return false;
   if (init === null || typeof init !== "object") return false;
   if (typeof init.body !== "string" || init.body.length === 0) return false;
@@ -604,6 +794,19 @@ export function rewriteCompactionBody(init, policy) {
   if ("tools" in body || "tool_choice" in body) {
     delete body.tools;
     delete body.tool_choice;
+    changed = true;
+  }
+  // Prompt optimization (feature: 提示词优化): append this plugin's
+  // supplementary requirements after the official main instruction. The
+  // chunked rescue reuses this rewritten final user message for every
+  // per-slice call and the final merge, so one append point covers all
+  // internal calls. Idempotent via the marker first line: a body that
+  // already carries the supplement (retry of the same logical request) is
+  // left untouched. Content may be a plain string or a block array; both
+  // are normalized to a string (the compaction instruction is always
+  // plain text in practice).
+  if (policy.supplementOn === true && !text.includes(SUPPLEMENT_MARKER)) {
+    last.content = `${text}\n\n${SUMMARY_SUPPLEMENT}`;
     changed = true;
   }
   if (!changed) return false;
@@ -948,6 +1151,202 @@ async function withRetry(fn) {
   throw lastError;
 }
 
+// ---------------------------------------------------------------------------
+// Window auto-resolution (feature 2b): the chunked rescue plans each slice
+// against the gateway window the compaction call actually targets. The user
+// may pin that number explicitly on the settings page (`contextWindows`);
+// when they have not, the plugin resolves it instead of giving up — the
+// classic case is switching a session to a SMALLER-window model mid-task
+// (e.g. a 1M-window model after 400k of history → a 300k-window model):
+// the switch does not re-configure this plugin, so the rescue must discover
+// the new model's budget on its own.
+//
+// Resolution chain for a model without an explicit setting (first hit wins):
+//   1. LIVE PROBE — `GET {gateway}/v1/models` on the gateway the compaction
+//      request is addressed to; reads `context_length` / `context_window`
+//      (llama.cpp discloses `context_length`; NInfer-style listings are
+//      accepted too). 5-minute cache, 4s probe timeout; a probe that fails
+//      or discloses nothing is remembered briefly and falls through.
+//   2. DECLARATION — the dsh model config file (settings.yaml
+//      `llm-pi-ai.providers.<p>.models[]`): the llm service's
+//      `resolveModelInfo` exposes the user's declared `contextWindow` (+
+//      `maxTokens`) for the model, no network needed. This is the 托底 the
+//      user asked for: whatever their model config says is the last word.
+// When neither source yields a window, the rescue stays disabled for that
+// model (fail open, as before) and logs ONE actionable warning naming the
+// exact gaps, instead of letting the request 400 silently.
+//
+// Declared/probed numbers are TOTAL windows (input + output share them on
+// gateways that reserve the output cap up front, like NInfer). A total
+// window therefore becomes an input budget by subtracting the model's
+// output reservation (its configured max tokens, when known) plus a 5%
+// headroom margin — e.g. 378144 − 192000 − 5% ≈ 167236, the NInfer Qwen3.8
+// input ceiling this plugin previously hard-coded. Explicit settings-page
+// values are used AS-IS: the user stated the window the gateway runs with.
+// ---------------------------------------------------------------------------
+
+/** Headroom kept from a declared TOTAL window when deriving an input budget. */
+const WINDOW_MARGIN_RATIO = 0.05;
+/** Cache TTL for a live gateway model-listing probe (hit or miss). */
+const PROBE_TTL_MS = 5 * 60 * 1000;
+/** Cache TTL for a model declaration lookup (settings.yaml edits are rare). */
+const DECLARED_TTL_MS = 5 * 60 * 1000;
+/** A model-listing probe is an optimization; never let it stall a rescue. */
+const PROBE_TIMEOUT_MS = 4000;
+
+const liveProbeCache = new Map(); // `${origin}|${model}` -> {value, expiresAt}
+const declaredCache = new Map(); // model -> {value, expiresAt}
+const missingWindowWarnings = new Set();
+
+/**
+ * Convert a declared TOTAL window into a safe per-call input budget.
+ * @param totalWindow - the window the gateway runs with (tokens).
+ * @param maxTokens - the output reservation the gateway enforces, or 0/unknown.
+ * @returns the input budget in tokens (never negative).
+ */
+function deriveInputBudget(totalWindow, maxTokens) {
+  if (typeof totalWindow !== "number" || !Number.isFinite(totalWindow) || totalWindow <= 0) return 0;
+  const reserved = typeof maxTokens === "number" && Number.isFinite(maxTokens) && maxTokens > 0 ? Math.floor(maxTokens) : 0;
+  return Math.floor(totalWindow) - reserved - Math.floor(totalWindow * WINDOW_MARGIN_RATIO);
+}
+
+/**
+ * The http(s) origin of the request the rescue is intercepting — the gateway
+ * to probe. Empty string for anything that is not an http(s) URL.
+ * @param input - the original fetch input (url string or Request-like).
+ */
+function requestOrigin(input) {
+  try {
+    let url = "";
+    if (typeof input === "string") url = input;
+    else if (input !== null && typeof input === "object") url = typeof input.url === "string" ? input.url : typeof input.href === "string" ? input.href : "";
+    if (url === "") return "";
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.origin : "";
+  } catch {
+    return "";
+  }
+}
+
+function probeCacheGet(origin, model) {
+  const hit = liveProbeCache.get(origin + "|" + model);
+  if (!hit || hit.expiresAt <= Date.now()) return undefined; // absent or stale → re-probe
+  return hit.value; // number (budget) | null (a remembered "no disclosure")
+}
+
+function probeCacheSet(origin, model, value) {
+  liveProbeCache.set(origin + "|" + model, { value, expiresAt: Date.now() + PROBE_TTL_MS });
+}
+
+/**
+ * One `GET {gateway}/v1/models` probe for the model's disclosed window.
+ * @returns `{totalWindow, maxTokens}` or `null` (unreachable, no disclosure).
+ */
+async function probeGatewayWindow(originalFetch, origin, model) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+  try {
+    const res = await originalFetch(origin.replace(/\/+$/, "") + "/v1/models", {
+      method: "GET",
+      signal: controller.signal,
+      headers: { accept: "application/json" },
+    });
+    if (!res.ok) return null;
+    const payload = await res.json().catch(() => null);
+    const entries = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.models) ? payload.models : Array.isArray(payload) ? payload : null;
+    if (!Array.isArray(entries)) return null;
+    let entry = entries.find((m) => m !== null && typeof m === "object" && m.id === model);
+    if (!entry) entry = entries.find((m) => m !== null && typeof m === "object" && typeof m.id === "string" && m.id.toLowerCase() === model.toLowerCase());
+    if (entry === undefined || entry === null) return null;
+    const totalWindow = Number(entry.context_length ?? entry.context_window ?? entry.contextWindow);
+    if (!Number.isFinite(totalWindow) || totalWindow <= 0) return null;
+    const maxTokensRaw = Number(entry.max_output_tokens ?? entry.maxOutputTokens ?? entry.max_tokens);
+    return { totalWindow: Math.floor(totalWindow), maxTokens: Number.isFinite(maxTokensRaw) && maxTokensRaw > 0 ? Math.floor(maxTokensRaw) : 0 };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * The dsh model config (settings.yaml declarations) as seen by the llm
+ * service: the last-resort fallback, no network involved.
+ * @returns the derived input budget, or `null` when the model is declared
+ *   nowhere (or the llm service is unavailable).
+ */
+async function declaredWindowFor(llmService, model) {
+  if (llmService === null || typeof llmService?.listProviders !== "function" || typeof llmService?.resolveModelInfo !== "function") return null;
+  try {
+    for (const provider of llmService.listProviders()) {
+      const pid = provider !== null && typeof provider === "object" && typeof provider.id === "string" ? provider.id : null;
+      if (!pid) continue;
+      let info;
+      try {
+        info = await llmService.resolveModelInfo(pid, model);
+      } catch {
+        continue; // model is not owned by this provider
+      }
+      const window = info?.context?.contextWindow;
+      if (typeof window === "number" && Number.isFinite(window) && window > 0) {
+        return deriveInputBudget(window, info?.defaultMaxTokens);
+      }
+    }
+  } catch {
+    /* service shape changed: treat as undeclared */
+  }
+  return null;
+}
+
+/**
+ * Resolve the input budget the rescue should plan against for `body`'s target
+ * model: explicit settings value → live gateway probe → the dsh model config
+ * declaration.
+ * @returns `{window, source: "config"|"gateway"|"settings"}`, or `undefined`
+ *   when nothing resolved (a one-shot actionable warning is logged naming the
+ *   model and what to configure).
+ */
+async function resolveChunkWindow(policy, body, input, originalFetch, ctx) {
+  const model = typeof body?.model === "string" && body.model !== "" ? body.model : "";
+  if (model === "") return undefined;
+  const explicit = policy?.chunking?.contextWindows?.[model];
+  if (typeof explicit === "number" && Number.isFinite(explicit) && explicit > 0) {
+    return { window: explicit, source: "config" };
+  }
+  const origin = requestOrigin(input);
+  if (origin !== "") {
+    const cached = probeCacheGet(origin, model);
+    if (typeof cached === "number" && cached > 0) return { window: cached, source: "gateway" };
+    if (cached === undefined) {
+      // Not probed yet (or the probe cache expired): ask the gateway.
+      const probed = await probeGatewayWindow(originalFetch, origin, model).catch(() => null);
+      if (probed !== null) {
+        const value = deriveInputBudget(probed.totalWindow, probed.maxTokens);
+        probeCacheSet(origin, model, value);
+        return { window: value, source: "gateway" };
+      }
+      probeCacheSet(origin, model, null); // remember the miss, briefly
+    }
+    // cached miss (null), or a probe that found nothing: fall through to the
+    // dsh model-config declaration.
+  }
+  const cachedDeclared = declaredCache.get(model);
+  if (cachedDeclared && cachedDeclared.expiresAt > Date.now()) {
+    if (typeof cachedDeclared.value === "number") return { window: cachedDeclared.value, source: "settings" };
+  } else {
+    const value = await declaredWindowFor(ctx?.llm, model).catch(() => null);
+    declaredCache.set(model, { value: value ?? null, expiresAt: Date.now() + DECLARED_TTL_MS });
+    if (typeof value === "number") return { window: value, source: "settings" };
+  }
+  if (!missingWindowWarnings.has(model)) {
+    missingWindowWarnings.add(model);
+    ctx?.logger?.warn?.(
+      `qwen38-gateway-compaction: model "${model}" has no resolvable context window (not set on the plugin settings page, no ${"/v1/models"} disclosure, no dsh model-config declaration); oversized compaction for it stays disabled. Set its context window on the plugin settings page, or declare contextWindow for "${model}" under its llm-pi-ai provider.`
+    );
+  }
+  return undefined;
+}
+
 /**
  * The oversized-compaction rescue (layer 5 / feature 2). Called ONLY after
  * layer 2 has confirmed `init` is a compaction body for an allowed model.
@@ -976,8 +1375,9 @@ export async function chunkedCompactionRescue(ctx, originalFetch, input, init, p
     return undefined;
   }
   if (body === null || typeof body !== "object" || !Array.isArray(body.messages)) return undefined;
-  const window = typeof body.model === "string" ? cfg.contextWindows[body.model] : undefined;
-  if (typeof window !== "number" || !Number.isFinite(window) || window <= 0) return undefined; // unknown model: fail open
+  const windowResult = await resolveChunkWindow(policy, body, input, originalFetch, ctx);
+  if (windowResult === undefined) return undefined; // no resolvable window: the resolver logged an actionable warning
+  const window = windowResult.window;
   const estimated = estimateBodyTokens(body);
   const callBudget = Math.floor(window * cfg.ratio);
   if (estimated <= callBudget) return undefined; // fits in one call: normal path
@@ -1021,10 +1421,10 @@ export async function chunkedCompactionRescue(ctx, originalFetch, input, init, p
   const buildMergeMessages = (partials) => {
     const n = partials.length;
     return [
-      {
-        role: "user",
-        content: `The original conversation was too large to summarize in a single pass. It was split into ${n} consecutive parts and each part was summarized separately. Below are the partial checkpoints, in order.`
-      },
+      // Consolidation rules (recency wins, dedupe, union of facts, end-state
+      // for Current Work/Next Step) live in MERGE_PREAMBLE so the merge model
+      // is told HOW to merge, not just that a merge is happening.
+      { role: "user", content: MERGE_PREAMBLE },
       ...partials.map((partial, i) => ({
         role: "user",
         content: `Partial checkpoint ${i + 1} of ${n}:\n<compacted-summary>\n${partial}\n</compacted-summary>`
@@ -1215,7 +1615,7 @@ function chooseEffort(configured, offeredIds) {
 
 /** Command names users type in the composer. */
 const MANUAL_COMPACT_COMMAND = "qwen38-compact";
-const MANUAL_NEW_CONTEXT_COMMAND = "qwen38-new-context";
+const MANUAL_NEW_CONTEXT_COMMAND = "clear-context";
 
 /**
  * Resolve (building on first use) the dsh-compaction-basic engine class.
@@ -1245,7 +1645,7 @@ function manualEngineClass() {
 }
 
 /**
- * Fixed marker text installed by `/qwen38-new-context`. Kept short on purpose:
+ * Fixed marker text installed by `/clear-context`. Kept short on purpose:
  * the engine refuses any summary that is not smaller than the shadowed
  * content, so the marker doubles as a minimum-size gate (a few lines of
  * history are not worth resetting). The engine wraps it in its standard
@@ -1311,7 +1711,7 @@ function manualCompactFailureText(error, { hardReset = false } = {}) {
 
 /**
  * Register the global manual commands (`/qwen38-compact` and, when enabled,
- * `/qwen38-new-context`). The engines and the commands live inside an
+ * `/clear-context`). The engines and the commands live inside an
  * injected child context that declares exactly the services the manual
  * transaction needs (`commands`, `tokenMeter`, `sessions`; `llm` is inherited
  * from this plugin's own inject list). Global (not agent-scoped) registration
@@ -1465,6 +1865,458 @@ async function runManualTransaction({ boot, kind, invocation, hardReset, noHisto
   }
 }
 
+// ---------------------------------------------------------------------------
+// Feature 5 — automatic overflow/pressure rescue for engine-less presets
+// ---------------------------------------------------------------------------
+
+/** npm name of the official engine (also the composition row key in preset inventories). */
+const COMPACTION_BASIC_MODULE = "@deepseek-ai/dsh-compaction-basic";
+
+/** Normalized failure code of a context-window overflow (dsh-llm `LlmFailure.code`). */
+const CONTEXT_WINDOW_EXCEEDED_FALLBACK = "CONTEXT_WINDOW_EXCEEDED";
+
+/** How long a preset-inventory snapshot stays fresh before a re-read. */
+const INVENTORY_TTL_MS = 30_000;
+
+/**
+ * Lazy-resolve the dsh-llm overflow failure code so the plugin tracks harness
+ * renames; falls back to the known literal when the package is unresolvable.
+ * @returns a promise for the failure-code string.
+ */
+let overflowCodePromise = null;
+function overflowCode() {
+  if (overflowCodePromise === null) {
+    overflowCodePromise = (async () => {
+      try {
+        const mod = await import("@deepseek-ai/dsh-llm");
+        if (typeof mod?.CONTEXT_WINDOW_EXCEEDED_CODE === "string" && mod.CONTEXT_WINDOW_EXCEEDED_CODE.length > 0) {
+          return mod.CONTEXT_WINDOW_EXCEEDED_CODE;
+        }
+      } catch {
+        /* dsh-llm unresolvable: the literal below is the stable wire value */
+      }
+      return CONTEXT_WINDOW_EXCEEDED_FALLBACK;
+    })();
+  }
+  return overflowCodePromise;
+}
+
+/**
+ * Pure decision: does this agent's deployment already run an ACTIVE built-in
+ * compaction engine that owns pressure/overflow recovery?
+ *   - `"active"`: an engine owns it (app-level service with auto not disabled,
+ *     or the agent's preset mounts dsh-compaction-basic) — the plugin must
+ *     not double-act.
+ *   - `"absent"`: no built-in anywhere; the plugin's rescue engine owns
+ *     pressure + overflow recovery for this agent.
+ *   - `"unknown"`: detection failed or the preset is unidentifiable — callers
+ *     treat it like `"active"` (no rescue), the conservative side: a missed
+ *     rescue surfaces the 400 (today's behavior), a false rescue risks
+ *     double compaction on GPU.
+ * @param appCompaction - value of `ctx.get("compaction")` (the app-level
+ *   service, when the profile mounts one; realm-isolated preset engines are
+ *   invisible here by design).
+ * @param presetId - the session's `agentPreset` projection (string or null).
+ * @param inventory - `{ byId: Map<string, boolean>, defaultId, error }` from
+ *   `indexCompositionInventory` (or a failure marker), or null/undefined when
+ *   no preset service exists in the profile.
+ * @returns `"active"` | `"absent"` | `"unknown"`.
+ */
+export function decideBuiltInCompaction(appCompaction, presetId, inventory) {
+  if (appCompaction !== undefined && appCompaction !== null) {
+    const auto = appCompaction?.config?.auto;
+    if (auto !== false) return "active";
+  }
+  if (inventory === undefined || inventory === null) return "absent";
+  if (inventory.error) return "unknown";
+  const id = typeof presetId === "string" && presetId.length > 0 ? presetId : inventory.defaultId;
+  if (id === null || id === undefined || !inventory.byId.has(id)) return "unknown";
+  return inventory.byId.get(id) ? "active" : "absent";
+}
+
+/**
+ * Flatten a preset `compositionInventory()` list into per-preset flags: does
+ * this preset's composition mount dsh-compaction-basic with effective
+ * enablement (a `conditional` `!!js` row counts as enabled — the expression
+ * is not evaluable from here, and deferring is the safe side)?
+ * @param list - the `AgentPresetComposition[]` rows (id, rows, isDefault…).
+ * @returns `{ byId, defaultId, error?: false }`.
+ */
+function indexCompositionInventory(list) {
+  const byId = new Map();
+  let defaultId = null;
+  if (!Array.isArray(list)) return { byId, defaultId, error: true };
+  for (const preset of list) {
+    if (preset === null || typeof preset !== "object" || typeof preset.id !== "string") continue;
+    if (byId.has(preset.id)) continue;
+    const rows = Array.isArray(preset.rows) ? preset.rows : [];
+    let has = false;
+    for (const row of rows) {
+      if (row && row.moduleName === COMPACTION_BASIC_MODULE && row.enabled !== false) {
+        has = true;
+        break;
+      }
+    }
+    if (preset.broken !== undefined) has = false;
+    byId.set(preset.id, has);
+    if (defaultId === null && preset.isDefault === true) defaultId = preset.id;
+  }
+  return { byId, defaultId, error: false };
+}
+
+/**
+ * Refine a model's discovery-reported context window with the operator's
+ * declared window (this plugin's `contextWindows` map): the gateway may
+ * declare a larger n_ctx than it actually runs, and the operator knows the
+ * real one. A declared value smaller than the discovery value is kept
+ * (hardware can't exceed it); otherwise the operator value wins. Pure: the
+ * discovery object is never mutated (the llm service caches it).
+ * @param model - the model id the call targets.
+ * @param info - the discovery result object (or null).
+ * @param windows - model id → declared window map (may be empty).
+ * @returns the same object when nothing changes, else a shallow copy with a
+ *   patched `context` slot.
+ */
+export function patchModelInfoWindows(model, info, windows) {
+  if (info === null || typeof info !== "object") return info;
+  const configured = typeof model === "string" && windows !== null && typeof windows === "object"
+    ? windows[model]
+    : undefined;
+  if (typeof configured !== "number" || !Number.isFinite(configured) || configured <= 0) return info;
+  const declared = info?.context?.contextWindow;
+  if (typeof declared === "number" && Number.isFinite(declared) && declared <= configured) return info;
+  const context = { ...(info.context ?? {}) };
+  context.contextWindow = configured;
+  return { ...info, context };
+}
+
+/**
+ * Wrap an llm service so the engine's `resolveModelInfo` sees the operator's
+ * declared context window for models in `windows` (see
+ * patchModelInfoWindows). Every other member is passed through (functions
+ * rebound to the service), so `llm.stream` — the summarization call this
+ * plugin's wire layers inspect — is untouched.
+ * @param llm - the llm service the engine resolves against.
+ * @param windows - model id → declared context window map.
+ */
+function makeWindowedLlm(llm, windows) {
+  if (llm === null || typeof llm !== "object") return llm;
+  if (Object.keys(windows ?? {}).length === 0) return llm;
+  return new Proxy(llm, {
+    get(target, prop) {
+      if (prop === "resolveModelInfo") {
+        return (provider, model, signal) => {
+          const call = typeof target.resolveModelInfo === "function"
+            ? target.resolveModelInfo(provider, model, signal)
+            : undefined;
+          if (call === undefined || typeof call.then !== "function") return call;
+          return call.then((info) => {
+            try {
+              return patchModelInfoWindows(model, info, windows);
+            } catch {
+              return info;
+            }
+          });
+        };
+      }
+      const value = Reflect.get(target, prop);
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  });
+}
+
+/**
+ * Read the session's durably routed target of its latest request — the same
+ * lookup the official engine performs before any recovery decision.
+ * @param session - the agent's session.
+ * @returns `{ provider, model }` or undefined.
+ */
+function routedTargetOf(session) {
+  try {
+    const config = session?.requestHeader?.()?.config;
+    if (config
+      && typeof config.provider === "string" && config.provider.length > 0
+      && typeof config.model === "string" && config.model.length > 0) {
+      return { provider: config.provider, model: config.model };
+    }
+  } catch {
+    /* header unavailable (e.g. session not yet hydrated): no routable target */
+  }
+  return undefined;
+}
+
+/**
+ * Feature 5 wiring: drive a detached dsh-compaction-basic instance (auto
+ * off, never service-registered) from the agent-loop waterfalls for agents
+ * whose preset ships no active built-in compaction engine.
+ *
+ * Safety invariants (all fail open — the original 400 always still surfaces):
+ *   - an agent with an ACTIVE built-in engine (app-level service or the
+ *     preset's composition) is never touched: the built-in owns recovery;
+ *   - the overflow-retry budget is per agent (autoCompaction.maxOverflowRetries,
+ *     default 1) and resets on agent idle or the next assistant message,
+ *     mirroring the official engine's bookkeeping;
+ *   - a recovery that does not advance the session surface (replaceGeneration
+ *     unchanged) never triggers a retry;
+ *   - every lookup (preset inventory, engine import, engine construction)
+ *     degrades to pass-through with a one-time warning.
+ *
+ * The engine's summarization call runs through the plugin context's llm
+ * service — with the operator's `contextWindows` map refined over the
+ * discovery values — so the plugin's wire layers (thinking-off, sampling,
+ * max_tokens floor, oversized chunked rescue) apply to the rescue's own
+ * summaries exactly as to the built-in engine's.
+ * @param ctx - the plugin context (provides events, llm, inject, logger).
+ * @param readPolicy - () => the live policy object (see policyOf).
+ */
+function registerAutoRescue(ctx, readPolicy) {
+  if (typeof ctx.get !== "function") {
+    try {
+      ctx.logger?.warn?.(
+        "qwen38-gateway-compaction: ctx.get is unavailable on this harness; the automatic overflow rescue is disabled (built-in detection is impossible); the manual commands still work"
+      );
+    } catch { /* logging unavailable: stay silent */ }
+    return;
+  }
+  const warn = (message) => {
+    try {
+      ctx.logger?.warn?.(`qwen38-gateway-compaction: ${message}`);
+    } catch { /* logging unavailable */ }
+  };
+  const info = (message) => {
+    try {
+      ctx.logger?.info?.(`qwen38-gateway-compaction: ${message}`);
+    } catch { /* logging unavailable */ }
+  };
+
+  const overflowRetries = new WeakMap(); // Agent -> consecutive overflow retries
+  const overflowAgents = new WeakMap(); // Session -> Agent (for the reset below)
+  const warned = new Set();
+  const engineCache = new Map(); // config key -> promise for {engine|error|disabled}
+  const warnedErrors = new Set();
+
+  // The engine is constructed in a child context that declares exactly the
+  // services its transactions need; `llm` comes from this plugin's own
+  // inject list (same arrangement as the manual commands).
+  let childCtx = null;
+  if (typeof ctx.inject === "function") {
+    try {
+      ctx.inject(["tokenMeter", "sessions"], (sctx) => {
+        childCtx = sctx;
+      });
+    } catch {
+      childCtx = null;
+    }
+  }
+
+  const enginePolicy = () => readPolicy()?.autoCompaction ?? { enabled: false, engineConfig: null };
+
+  const currentWindows = () => {
+    const chunking = readPolicy()?.chunking;
+    const map = chunking?.contextWindows;
+    if (map === null || typeof map !== "object") return {};
+    const out = {};
+    for (const [key, value] of Object.entries(map)) {
+      if (typeof value === "number" && Number.isFinite(value) && value > 0) out[key] = value;
+    }
+    return out;
+  };
+
+  function noteEngineError(error) {
+    const key = `engine:${error}`;
+    if (warnedErrors.has(key)) return;
+    warnedErrors.add(key);
+    warn(`the automatic overflow rescue is unavailable: ${error}`);
+  }
+
+  /**
+   * Resolve (building on first use, per config key) the rescue engine bound
+   * to the current policy. The engine never registers itself as the
+   * `compaction` service (detached context), and its llm view carries the
+   * operator's declared context windows over the discovery values.
+   * @returns a promise for `{ engine }`, `{ error }`, or `{ disabled: true }`.
+   */
+  async function engineFor() {
+    const policy = enginePolicy();
+    if (policy.enabled !== true || policy.engineConfig === null) return { disabled: true };
+    const windows = currentWindows();
+    const key = JSON.stringify([policy.engineConfig, Object.entries(windows).sort()]);
+    const cached = engineCache.get(key);
+    if (cached !== undefined) return cached;
+    const promise = (async () => {
+      const resolved = await manualEngineClass();
+      if (resolved.error !== undefined) return { error: resolved.error };
+      if (childCtx === null) {
+        return { error: "no child context (ctx.inject unavailable); the rescue engine cannot be hosted" };
+      }
+      try {
+        const llm = makeWindowedLlm(Reflect.get(detachedEngineCtx(childCtx), "llm"), windows);
+        const host = new Proxy(detachedEngineCtx(childCtx), {
+        get(target, prop) {
+          if (prop === "llm") return llm;
+          return Reflect.get(target, prop);
+        }
+      });
+        const engine = new resolved.Engine(host, policy.engineConfig);
+        info(`automatic overflow rescue armed (thresholdRatio ${policy.engineConfig.thresholdRatio}, maxOverflowRetries ${policy.engineConfig.maxOverflowRetries})`);
+        return { engine };
+      } catch (error) {
+        return { error: `rescue engine construction failed (${error?.message ?? error})` };
+      }
+    })();
+    engineCache.set(key, promise);
+    promise.then(
+      (result) => {
+        if (result.error !== undefined) noteEngineError(result.error);
+      },
+      () => { /* the cache entry settles on rejection as a plain rejection; engineFor rethrows via the handler's catch */ }
+    );
+    return promise;
+  }
+
+  /** TTL-cached preset inventory probe (see indexCompositionInventory). */
+  let inventoryCache = null;
+  let inventoryAt = 0;
+  async function inventory() {
+    if (inventoryCache !== null && Date.now() - inventoryAt < INVENTORY_TTL_MS) return inventoryCache;
+    let result;
+    try {
+      const presets = ctx.get("agentPresets");
+      if (presets && typeof presets.compositionInventory === "function") {
+        result = indexCompositionInventory(await presets.compositionInventory());
+      } else {
+        result = { byId: new Map(), defaultId: null, error: false };
+      }
+    } catch {
+      result = { byId: new Map(), defaultId: null, error: true };
+    }
+    inventoryCache = result;
+    inventoryAt = Date.now();
+    return result;
+  }
+
+  /** Which preset realm this agent runs (its `agentPreset` projection). */
+  function presetIdOf(agent) {
+    try {
+      const projections = ctx.get("sessionProjections");
+      if (projections && typeof projections.stateOf === "function" && agent?.session) {
+        const id = projections.stateOf(agent.session, "agentPreset");
+        if (typeof id === "string" && id.length > 0) return id;
+      }
+    } catch { /* projection service absent: fall back to the default preset */ }
+    return null;
+  }
+
+  async function builtInVerdict(agent) {
+    let appCompaction;
+    try {
+      appCompaction = ctx.get("compaction");
+    } catch {
+      appCompaction = undefined;
+    }
+    return decideBuiltInCompaction(appCompaction, presetIdOf(agent), await inventory());
+  }
+
+  // Pressure pre-compaction (agent/pre-step): when the session's routed model
+  // approaches its context budget and no built-in engine will act, compact
+  // BEFORE the next request overflows. All failures are non-fatal: the step
+  // proceeds either way.
+  ctx.on("agent/pre-step", async ({ agent, signal }, next) => {
+    try {
+      const policy = enginePolicy();
+      if (policy.enabled === true && signal?.aborted !== true && agent !== undefined) {
+        if ((await builtInVerdict(agent)) === "absent") {
+          const ready = await engineFor();
+          if (ready.engine !== undefined) {
+            try {
+              const result = await ready.engine.compactIfNeeded(agent, "pressure", signal);
+              if (result !== null) {
+                info(`pressure compaction (rescue): shadowed ${result.shadowedSeqs.length} nodes (~${result.shadowedTokenCount} tokens)`);
+              }
+            } catch (error) {
+              if (error?.name === "TargetPressureConfigError") {
+                const key = `pressure:${error.targetKey ?? "unknown"}`;
+                if (!warned.has(key)) {
+                  warned.add(key);
+                  warn(`${error.message ?? "target pressure config error"} — pressure pre-compaction is off for this model until a contextWindow is known for it (declare it in settings.yaml or in this plugin's contextWindows)`);
+                }
+              } else {
+                warn(`pressure compaction failed: ${error?.message ?? error}; continuing the turn`);
+              }
+            }
+          }
+        }
+      }
+    } catch {
+      /* the rescue must never break a step */
+    }
+    return next();
+  });
+
+  // Canonical context-overflow recovery (agent/request-error): when the
+  // provider rejects the request because it exceeds the context window and
+  // no built-in engine will recover it, compact the surface once and let the
+  // agent loop re-issue the request.
+  ctx.on("agent/request-error", async ({ agent, failure, signal }, next) => {
+    const policy = enginePolicy();
+    if (policy.enabled !== true) return next();
+    if (failure?.code !== (await overflowCode())) return next();
+    if (signal?.aborted === true || agent === undefined) return next();
+    if ((await builtInVerdict(agent)) !== "absent") return next();
+    const session = agent.session;
+    if (session === undefined) return next();
+    if (routedTargetOf(session) === undefined) return next();
+    const maxRetries = policy.engineConfig?.maxOverflowRetries ?? 1;
+    const retries = overflowRetries.get(agent) ?? 0;
+    if (retries >= maxRetries) return next();
+    overflowAgents.set(session, agent);
+    const ready = await engineFor();
+    if (ready.error !== undefined || ready.engine === undefined) {
+      if (ready.error !== undefined) noteEngineError(ready.error);
+      return next();
+    }
+    const generation = session.surface?.replaceGeneration;
+    let result;
+    try {
+      result = await ready.engine.compactIfNeeded(agent, "context-overflow", signal);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // A model-free prune can land before the summary fails (official
+      // semantics): that durable progress is enough to retry.
+      if (signal.aborted !== true
+        && typeof generation === "number"
+        && typeof session.surface?.replaceGeneration === "number"
+        && session.surface.replaceGeneration > generation) {
+        overflowRetries.set(agent, retries + 1);
+        return { kind: "retry" };
+      }
+      warn(`overflow recovery compaction failed: ${message}; ${signal.aborted ? "cancellation prevents the retry" : "preserving the original request error"}`);
+      return next();
+    }
+    if (signal.aborted === true) return next();
+    if (typeof generation !== "number" || session.surface?.replaceGeneration <= generation) return next();
+    if (result !== null) {
+      info(`overflow recovery (rescue): shadowed ${result.shadowedSeqs.length} nodes (~${result.shadowedTokenCount} tokens); retrying the request`);
+    }
+    overflowRetries.set(agent, retries + 1);
+    return { kind: "retry" };
+  });
+
+  // Budget resets: an idle agent starts the next episode fresh, and a
+  // completed assistant message starts a fresh overflow-recovery sequence
+  // even when tool calls continue the same turn (official semantics).
+  ctx.on("agent/status", ({ agent, status }) => {
+    if (status === "idle" && agent !== undefined) overflowRetries.delete(agent);
+  });
+  ctx.on("session/event", (session, event) => {
+    if (event?.type !== "assistant/message" || session === undefined) return;
+    const agent = overflowAgents.get(session);
+    if (agent !== undefined) overflowRetries.delete(agent);
+  });
+
+  info("automatic overflow rescue: listeners registered");
+}
+
 /**
  * Install the compaction policy on the `llm/stream` waterfall.
  * @param ctx - plugin context owning the listener and the settings wiring.
@@ -1580,6 +2432,10 @@ function apply(ctx, config = {}) {
   if (compactEnabled || newContextEnabled) {
     registerManualCommands(ctx, { compactEnabled, newContextEnabled });
   }
+  // Feature 5: automatic overflow/pressure rescue for presets without a
+  // built-in compaction engine. Listeners are fail-open (every guard passes
+  // the event through unchanged) and re-apply is idempotent per context.
+  registerAutoRescue(ctx, readPolicy);
 }
 
 export {

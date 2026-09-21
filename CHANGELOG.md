@@ -1,6 +1,40 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 (2026-09-19)
+
+### 自动压缩救援（无内置压缩引擎兜底，功能 6）
+
+- 新增 `autoCompaction` 配置段（默认开启，设置页「自动压缩救援」开关 + 高级参数 `thresholdRatio` / `maxOverflowRetries` 可调）：为**没有内置压缩引擎**的 preset（如 `minimal`）提供两级兜底——
+  - **压力预警**：每轮开始前按 `thresholdRatio(0.8) × 实际窗口` 提前压缩（窗口 = `contextWindows` 设置值 > 网关 `/v1/models` 活查 > dsh 模型配置）；
+  - **溢出恢复**：网关报上下文溢出（`CONTEXT_WINDOW_EXCEEDED` / 400）时自动压缩并重试，重试预算每会话独立（默认 1 次，`agent/status(idle)` 或新 assistant 消息后重置），防 400 死循环。
+- **归属判定，绝不双压**：app 级 `compaction` 服务启用 → 跳过；否则查 preset 组件清单（`agentPresets.compositionInventory()`，30s TTL 缓存）是否挂载 `@deepseek-ai/dsh-compaction-basic`；检测不确定一律按「有引擎」处理。standard 等自带引擎的 preset **行为零变化**（验收标准）。
+- 救援引擎以 `auto: false` 实例化（`BasicCompactionEngine` + detached ctx，永不自我注册为 `compaction` 服务），其 `llm` 经 Proxy 包装：`resolveModelInfo` 的窗口用插件 `contextWindows` 映射矫正（declared < 配置值时保留 declared，防硬件超窗），其余透传。
+- 全链路失败开放：任何守卫异常都原样放行事件、保留原始错误；救援摘要走本插件 wire 层（thinking-off / 采样参数照写），救援调用自身溢出时走既有分片救援。
+- 新增 `test/auto-rescue.mjs`（36 条断言：`decideBuiltInCompaction` 全分支 / `patchModelInfoWindows` 纯函数语义 / `autoCompactionEngineConfig` 映射与回退）。
+- 设置页：新增「自动压缩救援」开关与高级参数（阈值 / 重试上限），中英 locale 同步。
+
+### 压缩提示词优化（补充规则 + 合并前言重写）
+
+- 新增 `supplementOn` 配置（默认开启）：每次压缩调用（单次压缩、分片救援的每一片、最终合并）都在官方主指令**之后**追加 6 条补充规则——① 近期加权（旧内容更激进压缩，但不丢仍有效的决策/约束/纠正/未决问题）；② 路径/命令/端口/数值/标识符/错误串逐字保真；③ 进行中任务写清「已完成/剩余/唯一下一步」；④ 事实冲突取最新（旧值仅在变更本身有意义时保留）；⑤ 按会话主语言输出（覆盖官方「英文行文」规则，代码/路径/标识符保持原文）；⑥ 不虚构，空段落写 "(none)"。设计参考 agentscope 系压缩/记忆整理提示词与分片救援的实测弱点。官方主指令从不被替换（只追加），八段结构契约与 `COMPACTION_SIGNATURE` 前缀匹配不受影响；关闭后仅发送官方主指令。
+- 分片合并前言重写：由一句话「split into N parts」换成显式合并规则（后片优先 / 去重 / 事实并集 / "Current Work" 与 "Next Step" 取最后一片 / 不丢段落），降低多片摘要合并时的状态回退与事实丢失。
+- 设置页「压缩提示词」展示区扩展为三段：主压缩指令 + 补充规则（随 `supplementOn` 开关，位于基础设置组）+ 分片合并前言；中英文 locale 同步。
+- 新增 `test/prompt-sync.mjs`：守护 client 展示文本与 host 实际下发文本逐字一致（`SUPPLEMENT_TEXT === SUMMARY_SUPPLEMENT`；合并前言以前缀匹配）。
+
+### 设置页可见压缩提示词（只读）
+
+- 插件设置页（设置→插件配置卡片，以及 dsh ≥ 0.1.6 侧边栏「插件」面板页，两个入口一致）新增「压缩提示词（只读展示）」折叠区：
+  - 展示 dsh 官方压缩组件 `dsh-compaction-basic` 的**主压缩指令**参考副本（标注来源与 harness 版本；运行时每次压缩都会校验其首行，与当前 harness 不一致时告警）；
+  - 展示本插件**分片合并前言**（仅触发分片救援时出现的那段固定前言）；
+  - 只读，不可在页面编辑；要改提示词内容需改 harness / 插件源码。
+- `test/client-smoke.mjs` 新增断言：展示区正常渲染，且副本与 harness 源码中的指令逐字一致（工作区存在 harness 源码时自动交叉校验）。
+
+### 此前批次（随本版发布）
+
+- **改名**：硬重置命令 `/qwen38-new-context` → `/clear-context`（代码 / 测试 / 文档全部同步）。
+- 设置页双入口注册：`settings.plugin.item`（旧插件配置页）+ `plugins.bundle.config`（0.1.6 侧边栏「插件」面板）。
+- `cordis.patch.yml` 中 `contextWindows.qwen3.8-27b` 由 369144 修正为 **167236**（网关真实输入上限 = 378144 − 192000 − 5% 余量）。
+- 新增上下文窗口自动解析：显式 `contextWindows` > 网关活查 `/v1/models` > dsh 模型配置（settings.yaml 声明）。
+- package.json 版本 1.1.0 → 1.1.1（源码 link 安装，版本号仅作簿记）。
 
 ### minimal 上下文预算文档
 

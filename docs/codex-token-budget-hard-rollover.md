@@ -27,7 +27,7 @@
 
 | 能力 | 形态 | 说明与差距 |
 |---|---|---|
-| 显式硬重置(断片) | `/qwen38-new-context`(**已实现**,零 LLM 调用) | 复用官方 `dsh-compaction-basic` 事务,摘要器换固定模板;与 `new_context`「不总结、丢可见历史、环境不变」语义一致;**但是用户手动命令,不是模型可调用工具** |
+| 显式硬重置(断片) | `/clear-context`(**已实现**,零 LLM 调用) | 复用官方 `dsh-compaction-basic` 事务,摘要器换固定模板;与 `new_context`「不总结、丢可见历史、环境不变」语义一致;**但是用户手动命令,不是模型可调用工具** |
 | 超大对话分片救援 | 已实现 | 与本文主题独立,保证小窗口模型压缩仍可用 |
 | minimal 上下文预算管理(80% 预警 / 98% 自动压缩) | 设计确定,待实现 | 用 `tokenMeter.measure()` + 服务端硬限制预算,在 `agent/pre-step` 对 minimal 会话检查;见 [`minimal-context-budget.md`](./minimal-context-budget.md) |
 | 近似预算提醒 | `agent.inject()` 注入 user 角色上下文 + 本地估算 | dsh 有 `agent.inject(message)` 与 `agent/pre-step`;但**无服务器端预算记账、无每轮自动注入钩子**——只能「本地估算 + 显式注入」的近似,不等价于 Codex `get_context_remaining` 的宿主记账;且注入必须满足 dsh「Model-visible ⟺ logged」约束(需对应 session 事件) |
@@ -54,7 +54,7 @@
 
 ## 4. 对本插件的落地优先级
 
-1. **已落地**:`/qwen38-new-context`(硬重置)、分片救援、请求体改写。
+1. **已落地**:`/clear-context`(硬重置)、分片救援、请求体改写。
 2. **设计确定**:minimal 80% 预警 → 98% 自动摘要压缩(插件侧预算编排,服务端硬限制
    对齐:`378144 − 192000 − 18908 = 167236` 输入上限)。
 3. **可选增强(标注启发式/有损)**:handoff-note(硬重置前只让模型基于最近一小段

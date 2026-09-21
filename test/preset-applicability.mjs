@@ -118,7 +118,7 @@ assert.deepEqual(Object.keys(host.listeners), ['llm/stream'], 'only llm/stream i
 ok('applies with no compaction service; registers only the llm/stream waterfall (no auto-compaction added)')
 
 assert.ok(host.commands.some((d) => d.name === 'qwen38-compact'), 'compact command registered')
-assert.ok(host.commands.some((d) => d.name === 'qwen38-new-context'), 'new-context command registered')
+assert.ok(host.commands.some((d) => d.name === 'clear-context'), 'new-context command registered')
 ok('manual commands register through host services with no compaction engine (minimal works)')
 
 assert.ok(host.injected.some((d) => d.includes('commands') && d.includes('tokenMeter') && d.includes('sessions')),

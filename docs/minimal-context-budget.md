@@ -97,16 +97,16 @@ minimalContext:
 5. 成功提交 checkpoint 后重新测量；
 6. 失败时保持事务语义，不伪造成功。
 
-自动策略不执行硬重置。若摘要压缩无法完成，用户仍可手动执行 `/qwen38-compact` 或 `/qwen38-new-context`。
+自动策略不执行硬重置。若摘要压缩无法完成，用户仍可手动执行 `/qwen38-compact` 或 `/clear-context`。
 
 ## 手动动作
 
 | 命令 | 是否调用模型 | 信息保留 | 适用场景 |
 |---|---:|---|---|
 | `/qwen38-compact` | 是 | 摘要尽量保留，但有损 | 希望继续保留对话任务状态 |
-| `/qwen38-new-context` | 否 | 模型可见历史丢弃；原始事件日志保留 | 状态已在文件、git、数据库或外部环境中 |
+| `/clear-context` | 否 | 模型可见历史丢弃；原始事件日志保留 | 状态已在文件、git、数据库或外部环境中 |
 
-两个命令在 minimal session 中都可以使用。`/qwen38-compact` 需要 `dsh-compaction-basic` 包可解析；`/qwen38-new-context` 使用插件内的固定摘要器，不需要模型调用。
+两个命令在 minimal session 中都可以使用。`/qwen38-compact` 需要 `dsh-compaction-basic` 包可解析；`/clear-context` 使用插件内的固定摘要器，不需要模型调用。
 
 ## 失败与边界
 

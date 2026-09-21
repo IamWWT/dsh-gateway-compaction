@@ -8,8 +8,18 @@
  * baseline (react, dsh-client-ui-primitives, dsh-client-store).
  *
  * What it renders:
- *   - the plugin card inside Settings → Plugins → Plugin configuration (the one
- *     home every built-in plugin uses; no extra left-nav entry).
+ *   - the plugin card inside Settings → 插件 → 插件配置 (the `settings.plugin.item`
+ *     slot; the one home every built-in plugin uses; no extra left-nav entry), and
+ *   - on dsh ≥ 0.1.6 (ui-plugin-manager): the same form on the bundle's page in the
+ *     sidebar 插件 panel, registered into the `plugins.bundle.config` slot keyed by
+ *     this package's name. Both surfaces edit the same `qwen38-gateway-compaction`
+ *     settings namespace.
+ *   - on both surfaces: a read-only “压缩提示词” (compaction prompts) section
+ *     showing the exact text that shapes summary quality — the main compaction
+ *     instruction of dsh-compaction-basic (harness), the optional plugin
+ *     supplement rules (toggleable), and this plugin's chunked-merge preamble.
+ *     Display only: changing any of these texts requires a harness/plugin code
+ *     change, not a setting.
  * It edits the `qwen38-gateway-compaction` settings namespace.
  */
 window.__ModuleLoader__.load({
@@ -34,13 +44,13 @@ window.__ModuleLoader__.load({
 				title: 'Qwen3.8 网关压缩修复',
 				description: '让本地网关(llama.cpp 与 NInfer)上的 Qwen3.8 会话压缩可靠完成:辅助调用按引擎写入对应的关思考字段(llama.cpp: chat_template_kwargs.enable_thinking;NInfer: reasoning_effort),并用非思考模式推荐采样参数;超大对话自动分片压缩。保存后实时生效,无需重启。',
 				scopeNote: '作用域:本页全部参数只作用于「压缩摘要」与「会话标题」两类辅助调用。正常对话完全不受影响,仍使用你网关(llama.cpp/NInfer)的默认参数。NInfer 模型请把模型 id 同时填入 ninModels(设置页不展示该项,见 settings.yaml),否则会对 NInfer 网关误发 chat_template_kwargs 导致 400。',
-				commandHint: '手动操作:在任意会话输入框输入 /qwen38-compact(模型总结,保信息,大会话走分片)或 /qwen38-new-context(硬重置:不调模型、秒级完成、历史丢弃)。极简模式等无内置压缩引擎的会话也可用。',
+				commandHint: '手动操作:在任意会话输入框输入 /qwen38-compact(模型总结,保信息,大会话走分片)或 /clear-context(硬重置:不调模型、秒级完成、历史丢弃)。极简模式等无内置压缩引擎的会话也可用。',
 				basicTitle: '基础设置',
 				advancedTitle: '高级参数(仅作用于压缩/标题调用)',
 				modelsLabel: '适用模型 ID',
 				modelsHint: '逗号分隔,须与 settings.yaml 中 llm-pi-ai providers 声明的模型 id 完全一致;留空则整个策略停用。',
 				windowsTitle: '上下文窗口(tokens)——每个模型一行',
-				windowsHint: '该模型网关实际运行的上下文窗口(llama.cpp: -c,可用 curl /v1/models 查 context_length;NInfer: n_ctx)。只影响“何时分片”:设小=更早分片(慢一点),设大=可能单次溢出(安全回退)。',
+				windowsHint: '该模型网关实际运行的上下文窗口(llama.cpp: -c;NInfer: n_ctx)。只影响“何时分片”:设小=更早分片(慢一点),设大=可能单次溢出(安全回退)。留空则自动解析:先查网关 /v1/models,再查 dsh 模型配置(settings.yaml 中该模型的 contextWindow);两者都查不到才需要手填。',
 				enableThinkingOffLabel: '压缩/标题调用关闭思考',
 				enableThinkingOffHint: '开启:向匹配的辅助请求写入 chat_template_kwargs.enable_thinking=false(Qwen3 在 llama.cpp 上的主开关;对 NInfer 模型自动跳过——NInfer 不认该字段,只走 reasoning_effort)。正常对话不受影响。',
 				wireReasoningLabel: 'reasoning_effort 字段值',
@@ -49,7 +59,7 @@ window.__ModuleLoader__.load({
 				maxTokensFloorHint: '辅助调用的 max_tokens 至少抬到该值(只升不降),防止客户端上下文钳制吃掉输出预算;0 停用。',
 				rescueLabel: '超大对话分片救援',
 				rescueHint: '开启:压缩提示词超过单次调用容量时,自动切分逐段摘要再合并,而不是报“无法压缩”。',
-				newContextLabel: '硬重置命令 /qwen38-new-context',
+				newContextLabel: '硬重置命令 /clear-context',
 				newContextHint: '开启后任意会话可硬重置上下文:不调用模型、秒级完成、历史直接丢弃(环境状态不变)。',
 				temperatureLabel: 'temperature',
 				topPLabel: 'top_p',
@@ -91,18 +101,36 @@ window.__ModuleLoader__.load({
 				tipMergeMaxTokens: '依赖「超大对话分片救援」开启。最终合并 checkpoint 的输出上限(token)。',
 				tipMaxChunks: '依赖「超大对话分片救援」开启。单次救援的分片数安全上限;超出的区间 fail-open(转发原请求并告警)。',
 				tipNewContext: '独立项(不依赖其他项)。语义与 /qwen38-compact 不同:本命令不调用模型、不做摘要——直接把模型可见历史丢弃并写入新窗口标记,秒级完成、零 token 成本。适合任务状态都在文件/git 里的场景;纯问答会话(状态不在环境里)建议用 /qwen38-compact。',
+				promptTitle: '压缩提示词(只读展示)',
+				promptNote: '压缩质量由下面三段提示词决定,此区只读展示、不可编辑:第 1 段是 dsh 官方压缩组件(dsh-compaction-basic,harness 源码)的指令,本插件每次压缩原样复用;第 2 段是本插件可选追加的补充规则(见下方开关);第 3 段是本插件在触发分片救援时补的合并前言。要修改内容需要改 harness/插件源码。',
+				mainPromptTitle: '主压缩指令 — 来源:dsh-compaction-basic(harness 0.1.6-alpha.2 参考副本)',
+				mainPromptNote: '每次压缩都会作为最后一条用户消息发给模型:把上面的对话浓缩成固定八段结构的检查点。本插件每次压缩都会校验其首行,与当前 harness 不一致时告警。',
+				supplementTitle: '补充规则 — 本插件提供(随主指令一并发给模型,可关闭)',
+				supplementNote: '默认开启:压缩时把这 6 条追加在「主压缩指令」之后发给模型(单次压缩与分片救援的每片/最终合并都带上);关闭后只发官方指令。',
+				supplementOnLabel: '启用补充规则',
+				supplementOnHint: '默认开启;关闭后压缩只使用第一段官方指令。',
+				tipSupplementOn: '独立项(不依赖其他项)。作用于所有压缩类调用(单次压缩、分片救援的每片与最终合并),不影响正常对话。',
+				autoRescueLabel: '自动压缩救援(无内置引擎兜底)',
+				autoRescueHint: '默认开启:当会话所属 preset 没有内置压缩引擎(如极简模式)且网关报上下文溢出(400)时,自动用本插件压缩引擎压一轮并重试,最多重试 1 次。已有内置压缩引擎的会话(如 standard)绝不干预,不会双重压缩。',
+				tipAutoRescue: '独立项(不依赖「适用模型 ID」)。只兜底「没有内置压缩引擎」的 preset;standard 等自带 dsh-compaction-basic 的 preset 始终跳过(官方引擎已负责),检测不确定时也按「有引擎」处理,宁可漏救不双压。阈值/重试数在「高级参数」里调。',
+				autoRatioLabel: '自动压缩阈值 thresholdRatio',
+				tipAutoRatio: '依赖「自动压缩救援」开启。会话上下文达到该比例 × 实际窗口时提前压缩(默认 0.8);窗口取你在「上下文窗口」里声明的值(填得越准,预警越早)。',
+				autoMaxRetriesLabel: '溢出后最大重试 maxOverflowRetries',
+				tipAutoMaxRetries: '依赖「自动压缩救援」开启。网关报上下文溢出时,压缩后自动重试的次数上限(默认 1);每次重试的预算独立,防止 400 死循环。',
+				mergePromptTitle: '分片合并前言 — 本插件提供(仅触发分片救援时出现)',
+				mergePromptNote: '历史大到单次装不下时,插件按顺序逐片摘要,再用「这段前言 + 各片部分摘要 + 上面的主指令」做最终合并。',
 			},
 			en: {
 				title: 'Qwen3.8 gateway compaction fix',
 				description: 'Makes session compaction reliable on local Qwen3.8 gateways (llama.cpp AND NInfer): engine-appropriate thinking-off wire fields + non-thinking sampling for auxiliary calls; oversized conversations compact in chunks. Changes apply live, no restart.',
 				scopeNote: 'Scope: every parameter on this page applies ONLY to auxiliary calls — compaction summaries and session titles. Normal conversation is untouched and keeps your gateway defaults (llama.cpp/NInfer).',
-				commandHint: 'Manual operations: type /qwen38-compact (model-summarized, keeps information, chunked when oversized) or /qwen38-new-context (hard reset: no LLM call, instant, history discarded) in any session composer. Works even in presets without a built-in compaction engine.',
+				commandHint: 'Manual operations: type /qwen38-compact (model-summarized, keeps information, chunked when oversized) or /clear-context (hard reset: no LLM call, instant, history discarded) in any session composer. Works even in presets without a built-in compaction engine.',
 				basicTitle: 'Basics',
 				advancedTitle: 'Advanced (auxiliary calls only)',
 				modelsLabel: 'Model ids',
 				modelsHint: 'Comma-separated; must exactly match the model ids declared under llm-pi-ai providers in settings.yaml. Empty disables the whole policy.',
 				windowsTitle: 'Context window (tokens) — one row per model',
-				windowsHint: 'The context window the gateway actually runs for that model (llama.cpp: -c, checkable via curl /v1/models; NInfer: its n_ctx). Only affects WHEN chunking kicks in: smaller = earlier chunking (slower), larger = possible single-call overflow (safe fallback).',
+				windowsHint: 'The context window the gateway actually runs for that model (llama.cpp: -c; NInfer: its n_ctx). Only affects WHEN chunking kicks in: smaller = earlier chunking (slower), larger = possible single-call overflow (safe fallback). Leave a model blank and the plugin resolves it automatically: live /v1/models probe first, then the declaration in your dsh model config (settings.yaml contextWindow); only fill it in manually if both are missing.',
 				enableThinkingOffLabel: 'Disable thinking on compaction/title calls',
 				enableThinkingOffHint: 'On: writes chat_template_kwargs.enable_thinking=false into matched auxiliary requests (the primary Qwen3 switch on llama.cpp; skipped automatically for NInfer models, which only get reasoning_effort). Normal conversation is unaffected.',
 				wireReasoningLabel: 'reasoning_effort field value',
@@ -111,7 +139,7 @@ window.__ModuleLoader__.load({
 				maxTokensFloorHint: 'Raises auxiliary-call max_tokens to at least this value (never lowers) so the client-side context clamp cannot eat the output budget. 0 disables.',
 				rescueLabel: 'Oversized-compaction chunked rescue',
 				rescueHint: 'On: when a compaction prompt exceeds one call, summarize slices sequentially and merge instead of failing with “cannot compact”.',
-				newContextLabel: 'Hard-reset command /qwen38-new-context',
+				newContextLabel: 'Hard-reset command /clear-context',
 				newContextHint: 'When on, any session can hard-reset its context: no LLM call, instant, history discarded (environment state untouched).',
 				temperatureLabel: 'temperature',
 				topPLabel: 'top_p',
@@ -151,8 +179,103 @@ window.__ModuleLoader__.load({
 				tipMergeMaxTokens: 'Depends on “oversized-compaction chunked rescue” being on. Final merged-checkpoint output cap (tokens).',
 				tipMaxChunks: 'Depends on “oversized-compaction chunked rescue” being on. Safety cap on slices per rescue; ranges beyond it fail open (forward the original request with a warning).',
 				tipNewContext: 'Independent item (no dependencies). Different semantics from /qwen38-compact: this command makes NO LLM call and writes no summary — it discards the model-visible history and installs a fresh-window marker, instantly and at zero token cost. Best when task state lives in files/git; for pure Q&A sessions (state not in the environment) prefer /qwen38-compact.',
+				promptTitle: 'Compaction prompts (read-only)',
+				promptNote: 'Summary quality is set by the three prompts below. This section is display-only: (1) the official dsh-compaction-basic instruction (harness source), reused verbatim on every compaction; (2) the optional supplement rules this plugin appends (toggle below); (3) the merge preamble this plugin adds when chunked rescue fires. Changing any of them requires a code change.',
+				mainPromptTitle: 'Main compaction instruction — source: dsh-compaction-basic (harness 0.1.6-alpha.2 reference copy)',
+				mainPromptNote: 'Sent as the final user message on every compaction: condense the conversation above into a fixed eight-section checkpoint. The plugin verifies its first line at runtime and warns if the running harness no longer matches.',
+				supplementTitle: 'Supplement rules — provided by this plugin (sent with the main instruction; can be disabled)',
+				supplementNote: 'On by default: these six rules are appended after the main instruction on every compaction call (single-shot and each chunked slice / final merge). With the toggle off, only the official instruction is sent.',
+				supplementOnLabel: 'Enable supplement rules',
+				supplementOnHint: 'On by default; off = compaction uses only the official instruction.',
+				tipSupplementOn: 'Independent item (no dependencies). Applies to every compaction call (single-shot, each slice and the final merge of chunked rescue); normal conversation is unaffected.',
+				autoRescueLabel: 'Automatic overflow rescue (no built-in engine)',
+				autoRescueHint: 'On by default: when a session whose preset has no built-in compaction engine hits a context-window overflow (400), the plugin compacts once with its own engine and retries (max 1 retry). Sessions with a built-in engine (e.g. standard) are never touched — no double compaction.',
+				tipAutoRescue: 'Independent item (no dependency on "Model ids"). Only rescues presets WITHOUT a built-in compaction engine; presets that mount dsh-compaction-basic (e.g. standard) are always skipped, and an undetectable deployment is treated as "has engine" — a missed rescue surfaces the 400, a false one would double-compact on GPU. Threshold/retry cap live in Advanced.',
+				autoRatioLabel: 'auto-compact threshold (thresholdRatio)',
+				tipAutoRatio: 'Depends on "automatic overflow rescue" being on. Pre-compaction triggers at this ratio × the effective window (default 0.8); the window comes from your "Context window" entries above (the more accurate, the earlier the warning fires).',
+				autoMaxRetriesLabel: 'overflow retry cap (maxOverflowRetries)',
+				tipAutoMaxRetries: 'Depends on "automatic overflow rescue" being on. After the gateway reports a context overflow, the session is compacted and retried at most this many times (default 1); each retry gets its own budget so a 400 loop cannot run away.',
+				mergePromptTitle: 'Merge preamble — provided by this plugin (only when chunked rescue fires)',
+				mergePromptNote: 'When history no longer fits one call, each slice is summarized in order, then merged using this preamble + the partial checkpoints + the main instruction above.',
 			},
 		};
+
+		// ------------------------------------------------------------------
+		// Read-only prompt display (the “压缩提示词” section). MAIN_PROMPT_TEXT is
+		// a reference copy of the summarization instruction from dsh-compaction-basic
+		// (harness 0.1.6-alpha.2) — the exact text the engine sends as the final
+		// user message on every compaction, which this plugin reuses verbatim for
+		// each chunked slice and for the final merge. The host verifies its first
+		// line at runtime (COMPACTION_SIGNATURE) and warns if the running harness
+		// no longer matches. SUPPLEMENT_TEXT mirrors the host's SUMMARY_SUPPLEMENT
+		// (index.js) — the text appended after the main instruction when
+		// `supplementOn` is on; MERGE_PREAMBLE_TEXT mirrors the host's
+		// MERGE_PREAMBLE plus a worked example of the per-slice partials.
+		// test/prompt-sync.mjs keeps all three in lockstep with the host exports.
+		// Display only: no block is editable here.
+		// ------------------------------------------------------------------
+		const MAIN_PROMPT_TEXT = `You are now acting as a compaction engine for this AI coding assistant. Condense the conversation ABOVE into a structured checkpoint that lets another model resume the work with no loss of essential context.
+
+Output EXACTLY the Markdown structure below: keep every section, in order. Use terse bullets, not prose paragraphs. Write "(none)" for an empty section — never drop a section.
+
+## Primary Request and Intent
+- [the user's original and evolving goals; quote verbatim where the exact wording matters]
+
+## Key Technical Concepts
+- [technologies, frameworks, patterns, and conventions in play]
+
+## Files and Code
+- [exact path: why it matters, key changes or snippets]
+
+## Errors and Fixes
+- [error: how it was resolved, plus any related user feedback]
+
+## Pending Jobs
+- [explicitly requested work not yet completed]
+
+## Current Work
+- [precisely what was in progress at this checkpoint]
+
+## Next Step
+- [the single next action, directly in line with the most recent request, or "(none)"]
+
+## Critical Context
+- [decisions and their rationale, constraints, user preferences, open questions, data needed to continue]
+
+Rules:
+- Write concise English engineering prose. Preserve exact file paths, commands, error strings, identifiers, numeric values, function signatures, and syntax fragments.
+- Capture user feedback and explicit instructions faithfully, especially corrections.
+- Do NOT mention this summarization request or that the context was compacted.
+- Output only the checkpoint text: do not call any tool or take any other action.
+- If the conversation already contains a <compacted-summary> block, it is a PRIOR checkpoint. Do not copy it forward verbatim: preserve still-true facts, drop stale ones, and merge newer information into a single consolidated summary under the same structure.`;
+
+		/** Display copy of the host's SUMMARY_SUPPLEMENT (index.js) — the exact text
+		 * appended after the main instruction on every compaction call when
+		 * `supplementOn` is true. test/prompt-sync.mjs asserts it stays in
+		 * lockstep with the host export. */
+		const SUPPLEMENT_TEXT = `Additional compaction requirements (appended by dsh-qwen38-gateway-compaction plugin; where these conflict with the instruction above, THESE RULES WIN):
+
+1. Recency weighting: weight the most recent exchanges most heavily. Compress older material more aggressively, but never drop a decision, constraint, correction, or open question that still applies.
+2. Verbatim fidelity: preserve exact file paths, commands, ports and numeric values, identifiers, and error strings; quote the user's own words for instructions and corrections.
+3. In-flight work: for every task still in progress, state exactly what is done, what remains, and the single concrete next action.
+4. Conflict resolution: when facts conflict, the most recent statement wins; keep a superseded value only when the change itself matters.
+5. Language (OVERRIDES the 'concise English prose' rule above): write the checkpoint in the conversation's dominant language; keep code, paths, commands, and identifiers verbatim.
+6. Never invent facts that are not present in the conversation; if a section has no content, write "(none)".`;
+
+		/** Display copy of the host's MERGE_PREAMBLE (index.js), followed by a
+		 * worked example of how the per-slice partials are embedded in the real
+		 * merge call. The wire text is the host's MERGE_PREAMBLE verbatim; the
+		 * example tail is display-only. */
+		const MERGE_PREAMBLE_TEXT = `The original conversation was too large to summarize in a single pass, so it was split into consecutive parts and each part was summarized separately. The partial checkpoints below are in chronological order. Merge them into the single final checkpoint.
+
+Merging rules:
+- Later parts are MORE recent: on any conflict, the most recent partial wins.
+- Deduplicate: state each fact once, in its most complete form.
+- Union of facts: a fact from any part survives unless a later partial supersedes it.
+- "Current Work" and "Next Step" must describe the state at the END of the conversation (the last partial), not an earlier point.
+- Keep every section of the required structure; never drop a section.
+
+(示例：实际合并调用中，上述前言之后依次是每片的分片摘要——形如 "Partial checkpoint 1 of N:" 后跟 <compacted-summary>…</compacted-summary>，每片一条；末尾再附上与上方完全相同的「主压缩指令」(若开启补充规则,则连同其后的补充规则一并附上)。)`;
 
 		// ------------------------------------------------------------------
 		// Field registry. path(value) may depend on the current section value.
@@ -219,6 +342,12 @@ window.__ModuleLoader__.load({
 			{
 				id: 'newContextEnabled', path: () => ['command', 'newContext', 'enabled'], labelKey: 'newContextLabel', hintKey: 'newContextHint', tipKey: 'tipNewContext', bool: true,
 			},
+			{
+				id: 'supplementOn', path: () => ['supplementOn'], labelKey: 'supplementOnLabel', hintKey: 'supplementOnHint', tipKey: 'tipSupplementOn', bool: true,
+			},
+			{
+				id: 'autoRescueEnabled', path: () => ['autoCompaction', 'enabled'], labelKey: 'autoRescueLabel', hintKey: 'autoRescueHint', tipKey: 'tipAutoRescue', bool: true,
+			},
 		];
 
 		const ADVANCED_FIELDS = [
@@ -232,6 +361,8 @@ window.__ModuleLoader__.load({
 			{ id: 'chunkMaxTokens', path: () => ['chunking', 'chunkMaxTokens'], labelKey: 'chunkMaxTokensLabel', tipKey: 'tipChunkMaxTokens', numeric: true, rescueDependent: true },
 			{ id: 'mergeMaxTokens', path: () => ['chunking', 'mergeMaxTokens'], labelKey: 'mergeMaxTokensLabel', tipKey: 'tipMergeMaxTokens', numeric: true, rescueDependent: true },
 			{ id: 'maxChunks', path: () => ['chunking', 'maxChunks'], labelKey: 'maxChunksLabel', tipKey: 'tipMaxChunks', numeric: true, rescueDependent: true },
+			{ id: 'autoRatio', path: () => ['autoCompaction', 'thresholdRatio'], labelKey: 'autoRatioLabel', tipKey: 'tipAutoRatio', numeric: true, autoDependent: true },
+			{ id: 'autoMaxRetries', path: () => ['autoCompaction', 'maxOverflowRetries'], labelKey: 'autoMaxRetriesLabel', tipKey: 'tipAutoMaxRetries', numeric: true, autoDependent: true },
 		].map((f) => ({ ...f, format: (v) => typeof v === 'number' ? String(v) : '', parse: numberParse }));
 
 		const ALL_FIELDS = FIELDS.concat(ADVANCED_FIELDS);
@@ -312,6 +443,11 @@ window.__ModuleLoader__.load({
 			const rescueOn = ce === undefined
 				? Boolean(getAt(value, ['chunking', 'enabled']))
 				: ce.text === 'true';
+			// Auto-rescue master switch (staged value wins): gates the autoCompaction scalars.
+			const ae = this.staged.get('autoRescueEnabled');
+			const autoOn = ae === undefined
+				? Boolean(getAt(value, ['autoCompaction', 'enabled']))
+				: ae.text === 'true';
 			return {
 				status: snap ? snap.status : 'loading',
 				writable: Boolean(snap && snap.writable),
@@ -319,6 +455,7 @@ window.__ModuleLoader__.load({
 				fields,
 				windows,
 				rescueOn,
+				autoOn,
 				open: this.open,
 				dirty: this.staged.size > 0 || this.stagedWindows.size > 0,
 				saving: this.saving,
@@ -449,6 +586,14 @@ window.__ModuleLoader__.load({
 			background: 'color-mix(in srgb, var(--dsw-alias-label-warning, #f59e0b) 10%, transparent)',
 		};
 		const commandHintStyle = { margin: '0 0 6px', fontSize: '12px', lineHeight: 1.5, color: 'var(--dsw-alias-label-tertiary, rgba(128,128,128,0.9))' };
+		const promptSubTitleStyle = { fontSize: '12.5px', fontWeight: 600, margin: '10px 0 4px', color: 'var(--dsw-alias-label-primary, inherit)' };
+		const promptPreStyle = {
+			margin: '0 0 4px', padding: '10px 12px', fontSize: '12px', lineHeight: 1.55,
+			fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+			whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowY: 'auto', maxHeight: '360px',
+			borderRadius: '8px', border: '0.5px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.25))',
+			background: 'var(--dsw-alias-bg-layer-2, rgba(128,128,128,0.06))',
+		};
 
 		// Plugin-card chrome copied from the built-in plugin cards
 		// (ui-settings-plugins/PluginCard.module.css), expressed against the same
@@ -628,10 +773,23 @@ window.__ModuleLoader__.load({
 					h('summary', { style: Object.assign({ display: 'block' }, sectionTitleStyle, { cursor: 'pointer' }) }, t('advancedTitle')),
 					ADVANCED_FIELDS.map((f) => h(FieldRow, {
 						key: f.id, id: props.idPrefix + '-' + f.id, t, field: f, state: s.fields[f.id],
-						disabled, dimmed: Boolean(f.rescueDependent) && !s.rescueOn,
+						disabled, dimmed: (f.rescueDependent && !s.rescueOn) || (f.autoDependent && !s.autoOn),
 						onEdit: (text) => props.edit(f.id, text),
 						onReset: () => props.resetField(f.id),
 					})),
+				),
+				h('details', { style: { margin: '4px 0' } },
+					h('summary', { style: Object.assign({ display: 'block' }, sectionTitleStyle, { cursor: 'pointer' }) }, t('promptTitle')),
+					h('p', { style: Object.assign({}, hintStyle, { margin: '6px 0' }) }, t('promptNote')),
+					h('div', { style: promptSubTitleStyle }, t('mainPromptTitle')),
+					h('pre', { style: promptPreStyle }, MAIN_PROMPT_TEXT),
+					h('p', { style: hintStyle }, t('mainPromptNote')),
+					h('div', { style: promptSubTitleStyle }, t('supplementTitle')),
+					h('pre', { style: promptPreStyle }, SUPPLEMENT_TEXT),
+					h('p', { style: hintStyle }, t('supplementNote')),
+					h('div', { style: promptSubTitleStyle }, t('mergePromptTitle')),
+					h('pre', { style: promptPreStyle }, MERGE_PREAMBLE_TEXT),
+					h('p', { style: Object.assign({}, hintStyle, { marginBottom: '8px' }) }, t('mergePromptNote')),
 				),
 				h('footer', { style: { display: 'flex', gap: '8px', alignItems: 'center', padding: '12px 0 0' } },
 					s.dirty && s.writable ? h(Button, { variant: 'primary', size: 'sm', disabled: s.saving || Object.values(s.fields).some((x) => x.invalid) || Object.values(s.windows).some((x) => x.invalid), onClick: () => props.save() }, s.saving ? t('saving') : t('save')) : null,
@@ -671,6 +829,17 @@ window.__ModuleLoader__.load({
 			);
 		}
 
+		/**
+		 * The same form on the dsh ≥ 0.1.6 Plugins page (ui-plugin-manager): the
+		 * page draws the title, crumb and section frame itself and asks the
+		 * `plugins.bundle.config` entry for `view: 'page'` only, so render the
+		 * fields directly — no card chrome, no disclosure (the page IS open).
+		 */
+		function BundleConfig(props) {
+			if (props.view !== 'page') return null;
+			return h(Fields, Object.assign({ idPrefix: 'plugin-config-qwen38-plugins' }, props));
+		}
+
 		// ------------------------------------------------------------------
 		// Cordis client plugin surface.
 		// ------------------------------------------------------------------
@@ -685,14 +854,26 @@ window.__ModuleLoader__.load({
 			ctx.effect(() => ctx.locale.register(NS, LOCALES), NS + ': client dictionaries');
 			const t = typeof ctx.locale?.bind === 'function' ? ctx.locale.bind(NS) : (key) => String(key);
 			const controller = new Qwen38CardController(ctx.settingsScope.bind({ namespace: NS }));
-			// The one home for a plugin's settings — Settings → 插件 → 插件配置 —
-			// matching every built-in plugin (no separate left-nav entry).
+			// Legacy home (still hosted by the settings page): Settings → 插件 →
+			// 插件配置 card, matching every built-in plugin (no extra left-nav
+			// entry). On dsh builds without that page the registration is simply
+			// never rendered.
 			ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
 				name: 'settings.plugin.item',
 				key: NS,
 				locale: NS,
 				inject: () => controller.inject(),
 			}, Card));
+			// dsh ≥ 0.1.6 home: the bundle's page in the sidebar 插件 panel
+			// (ui-plugin-manager) renders this entry — keyed by this package's
+			// name — as the bundle's own configuration section. On dsh builds
+			// that ship no Plugins page the entry is simply never rendered.
+			ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
+				name: 'plugins.bundle.config',
+				key: 'dsh-qwen38-gateway-compaction',
+				locale: NS,
+				inject: () => controller.inject(),
+			}, BundleConfig));
 		};
 
 		return module.exports;

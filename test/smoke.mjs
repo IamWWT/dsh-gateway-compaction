@@ -292,7 +292,7 @@ console.log("manual compaction command:");
   apply(ctxCmd, {});
   check("command: inject declares the required services", injectCalls.some((d) => d.includes("commands") && d.includes("tokenMeter") && d.includes("sessions")), true);
   const names = registeredDefs.map((d) => d.name).sort();
-  check("command: both manual commands registered by default", JSON.stringify(names), JSON.stringify(["qwen38-compact", "qwen38-new-context"]));
+  check("command: both manual commands registered by default", JSON.stringify(names), JSON.stringify(["clear-context", "qwen38-compact"]));
   for (const def of registeredDefs) {
     check(`command: ${def.name} handler is async`, typeof def.handler, "function");
   }
@@ -407,7 +407,7 @@ console.log("manual compaction command:");
     }
   };
   apply(ctxOff, { command: { enabled: false } });
-  check("command: compact disabled via config leaves only /qwen38-new-context", JSON.stringify(registeredDefsOff.map((d) => d.name)), JSON.stringify(["qwen38-new-context"]));
+  check("command: compact disabled via config leaves only /clear-context", JSON.stringify(registeredDefsOff.map((d) => d.name)), JSON.stringify(["clear-context"]));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

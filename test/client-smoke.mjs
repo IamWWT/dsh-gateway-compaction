@@ -161,20 +161,32 @@ assert.equal(localeRegisters[0].ns, 'qwen38-gateway-compaction')
 for (const lang of ['zh', 'en']) {
   const dict = localeRegisters[0].dict[lang]
   assert.ok(dict && typeof dict.title === 'string' && dict.title.length > 0, `locale ${lang} has title`)
-  for (const key of ['scopeNote', 'commandHint', 'modelsLabel', 'windowsTitle', 'windowsHint', 'basicTitle', 'enableThinkingOffLabel', 'wireReasoningLabel', 'maxTokensFloorLabel', 'rescueLabel', 'advancedTitle', 'on', 'off', 'collapse', 'expand', 'unsaved', 'save', 'discard', 'overridden', 'reset', 'invalidNumber', 'saveFailed']) {
+  for (const key of ['scopeNote', 'commandHint', 'modelsLabel', 'windowsTitle', 'windowsHint', 'basicTitle', 'enableThinkingOffLabel', 'wireReasoningLabel', 'maxTokensFloorLabel', 'rescueLabel', 'advancedTitle', 'promptTitle', 'promptNote', 'mainPromptTitle', 'mainPromptNote', 'mergePromptTitle', 'mergePromptNote', 'on', 'off', 'collapse', 'expand', 'unsaved', 'save', 'discard', 'overridden', 'reset', 'invalidNumber', 'saveFailed']) {
     assert.ok(typeof dict[key] === 'string' && dict[key].length > 0, `locale ${lang} has ${key}`)
   }
 }
 
-assert.equal(slotEntries.length, 1, 'only the plugins-tab card is registered (no duplicate left-nav entry)')
+// Two intentional surfaces: the legacy settings-page card AND the dsh ≥ 0.1.6
+// plugin-manager bundle card. Both edit the same settings namespace through
+// one shared controller. A third registration (e.g. a duplicate left-nav
+// entry) is a bug.
+assert.equal(slotEntries.length, 2, 'exactly two surfaces registered: settings-tab card + plugin-manager bundle card')
 const entry = slotEntries.find((e) => e.options.name === 'settings.plugin.item')
-assert.ok(entry, 'plugins-tab card entry present')
+assert.ok(entry, 'settings-tab card entry present')
 assert.equal(entry.options.key, 'qwen38-gateway-compaction')
 assert.equal(entry.options.locale, 'qwen38-gateway-compaction')
 assert.equal(typeof entry.component, 'function')
 const face = entry.options.inject()
 assert.ok(face.hooks.qwen38Card, 'face exposes the card store hook')
 for (const fn of ['edit', 'resetField', 'save', 'discard', 'toggleOpen']) assert.equal(typeof face[fn], 'function')
+
+const bundleEntry = slotEntries.find((e) => e.options.name === 'plugins.bundle.config')
+assert.ok(bundleEntry, 'plugin-manager bundle card entry present')
+assert.equal(bundleEntry.options.key, 'dsh-qwen38-gateway-compaction')
+assert.equal(typeof bundleEntry.component, 'function')
+const bundleFace = bundleEntry.options.inject()
+assert.ok(bundleFace.hooks.qwen38Card, 'bundle face exposes the card store hook')
+assert.equal(bundleFace.hooks.qwen38Card, face.hooks.qwen38Card, 'both surfaces share one controller')
 
 // ---------------------------------------------------------------------------
 // Render pass 1: base value + one user override.
@@ -208,6 +220,14 @@ assert.match(html, /作用域/, 'card carries the scope banner')
 // The manual-command hint moved into the card body (the dedicated left-nav
 // section is gone), so the plugins tab remains the single, complete home.
 assert.match(html, /\/qwen38-compact/, 'card body shows the manual command hint')
+
+// The dsh ≥ 0.1.6 plugin page renders the identical fields without the card
+// chrome (the page draws the title/frame itself); outside that surface the
+// entry renders nothing.
+const bundleHtml = render(bundleEntry.component({ ...props, view: 'page' }))
+assert.match(bundleHtml, /\/clear-context/, 'bundle page renders the manual command hint')
+assert.match(bundleHtml, /基础设置/, 'bundle page renders the field sections')
+assert.equal(render(bundleEntry.component(props)), '', 'bundle entry renders nothing outside the plugin page')
 
 // ---------------------------------------------------------------------------
 // v0.4 UI: enum dropdown, hover tooltips, rescue-gated dimming.
@@ -285,7 +305,7 @@ assert.ok(!/<button[^>]*>保存<\/button>/.test(html), 'no save button after dis
 // ---------------------------------------------------------------------------
 // Hard-reset command switch (nested command.newContext.enabled path).
 // ---------------------------------------------------------------------------
-assert.match(html, /硬重置命令 \/qwen38-new-context/, 'new-context switch label renders')
+assert.match(html, /硬重置命令 \/clear-context/, 'new-context switch label renders')
 face.edit('newContextEnabled', 'false')
 await face.save()
 assert.deepEqual(norm(mutateCalls.at(-1).ops), [
@@ -321,5 +341,35 @@ face.edit('models', 'NewModel-42, Other')
 await face.save()
 const modelOps = norm(mutateCalls.at(-1).ops)
 assert.deepEqual(modelOps, [{ op: 'set', path: ['models'], value: ['NewModel-42', 'Other'] }])
+
+// ---------------------------------------------------------------------------
+// Read-only “压缩提示词” section: the prompt text that shapes summary quality
+// must be visible on the page, and the displayed main prompt must stay a
+// faithful reference copy of the harness instruction.
+// ---------------------------------------------------------------------------
+const promptHtml = renderCard()
+assert.match(promptHtml, /压缩提示词\(只读展示\)/, 'prompt display section renders')
+assert.match(promptHtml, /dsh-compaction-basic/, 'main prompt names its source')
+assert.match(promptHtml, /You are now acting as a compaction engine/, 'main instruction text renders')
+assert.match(promptHtml, /分片合并前言/, 'merge preamble block renders')
+assert.match(promptHtml, /Partial checkpoint 1 of N/, 'merge preamble sample renders')
+
+// Cross-check the displayed reference copy against the harness source when the
+// checkout is present (workspace layout: ../../deepseek-harness). Skipped in
+// standalone checkouts that do not carry the harness source.
+import { existsSync } from 'node:fs'
+const summarizerPath = new URL('../../../deepseek-harness/packages/compaction/compaction-basic/src/summarizer.ts', import.meta.url)
+if (existsSync(summarizerPath)) {
+  const harness = readFileSync(summarizerPath, 'utf8')
+  const m = harness.match(/const COMPACTION_INSTRUCTION = \[([\s\S]*?)\]\.join/)
+  assert.ok(m, 'harness exposes COMPACTION_INSTRUCTION')
+  const harnessText = eval(`(function () { const SUMMARY_OPEN_TAG = '<compacted-summary>'; return [${m[1]}].join('\\n'); })()`)
+  const clientSrc = readFileSync(new URL('../client.js', import.meta.url), 'utf8')
+  const cm = clientSrc.match(/const MAIN_PROMPT_TEXT = `([\s\S]*?)`;/)
+  assert.ok(cm, 'client.js embeds MAIN_PROMPT_TEXT')
+  assert.equal(cm[1], harnessText, 'displayed main prompt is an exact copy of the harness instruction')
+} else {
+  console.log('note: harness source not present; reference-copy guard skipped')
+}
 
 console.log('client-smoke: all assertions passed')
