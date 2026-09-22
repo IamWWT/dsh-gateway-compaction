@@ -53,7 +53,7 @@ Qwen3.8 本地网关（llama.cpp / NInfer）上的会话压缩修复插件：源
     `journalctl --user -u dsh-dev-web` 应见 "overflow recovery (rescue)" /
     "pressure compaction (rescue)" / "automatic overflow rescue" 关键词，且会话恢复。
 
-### 压缩提示词优化（本批，未发布版本 Unreleased）
+### 压缩提示词优化（已随 1.2.0 发布）
 
 - 已实现：
   - `supplementOn`（默认 true）：主指令后追加 6 条补充规则（近期加权/逐字保真/进行中任务/
@@ -69,12 +69,24 @@ Qwen3.8 本地网关（llama.cpp / NInfer）上的会话压缩修复插件：源
     「启用补充规则」开关（默认开）。
   - 真实大会话跑 `/gateway-compact` 验证分片压缩质量。
 
-### 遗留（未开工）
+### 遗留（未开工 / 已知限制）
 
 - ~~阶段二：请求 400 溢出时被动触发压缩重试~~ → 已完成（上文「自动压缩救援」批次）。
 - 可选优化（未拍板）：尾部原文保护 / chunkMaxTokens 调大 / 边界感知切片 / 滚动接力。
 - 设置页三区折叠 UI 方案（未确认）。
 - `/clear-context` 改名后 3082 是否已重启，用户端未确认。
+
+### 已知限制（非阻塞，记录在案）
+
+1. **旧会话的补充规则标记**：改名（`qwen38-` → `gateway-`）前生成的摘要/检查点里带旧
+   `SUPPLEMENT_MARKER` 文本；新代码识别的是新标记，最坏情况是补充规则在提示词里
+   重复出现一次——纯文本重复，无功能影响，新会话不受影响。
+2. **settings.yaml 段名需手工改名**：`qwen38-gateway-compaction:` → `gateway-compaction:`
+   （段内容不动）。不改的后果 = 新插件按全默认值运行（功能仍在，但个性化配置失效）。
+3. **`minimalContext:` 配置块是设计占位**：代码不消费；README 配置示例中已注明，
+   实际键为 `autoCompaction.*` + `chunking.contextWindows`。
+4. **98% 没有独立触发器**：原设计的 98% 自动摘要压缩未实现为独立阈值，由
+   「400 溢出 → 压缩 → 重试」路径覆盖（数值区间等价，见 docs/minimal-context-budget.md）。
 
 ## 关键约定（勿忘）
 
