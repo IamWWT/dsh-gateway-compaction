@@ -1,8 +1,22 @@
-# Qwen3.8 Gateway Compaction & Context Management (DSH plugin)
+# Local Gateway Compaction & Context Management (dsh-gateway-compaction)
 
-`dsh-qwen38-gateway-compaction` is a [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) plugin for local Qwen3.8 gateways, covering **llama.cpp / Unsloth Studio** and **NInfer**.
+`dsh-gateway-compaction` is a [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) plugin for local model gateways (**llama.cpp / Unsloth Studio** and **NInfer**), targeting **Qwen3.8-27B GGUF** gateways by default.
 
 GitHub renders the Chinese [`README.md`](./README.md) by default. This English file is `README.en.md`.
+
+## Applicable models
+
+This plugin targets **local Qwen3.8 gateways** (served by llama.cpp / Unsloth Studio or an NInfer gateway) by default:
+
+| Item | Notes |
+|---|---|
+| Default scope | `Qwen3.8-27B-GGUF` (llama.cpp / Unsloth model id) and `qwen3.8-27b` (NInfer gateway id — also list it under `ninModels`) |
+| Qwen3-specific parts | the thinking-off wire fields (`chat_template_kwargs.enable_thinking` / `reasoning_effort`) rely on Qwen3 chat templates; the bundled sampling values are Qwen3's recommended non-thinking settings |
+| The compaction machinery itself | chunked map-reduce rescue, automatic overflow rescue, `/gateway-compact`, `/clear-context` are model-agnostic |
+| Extending to other models | add the model id to `models` (and to `ninModels` when served by an NInfer gateway); the wire fields must be supported by the gateway |
+| Not applicable | non-OpenAI-compatible gateways, or model families with different thinking switches (adjust the wire fields yourself) |
+
+> Naming history: the plugin was formerly `dsh-qwen38-gateway-compaction`; it was renamed to `dsh-gateway-compaction` on 2026-09-19 (same capabilities, same applicable models). The `settings.yaml` section is now `gateway-compaction` — rename the old `qwen38-gateway-compaction:` section manually when upgrading.
 
 ## Capability matrix
 
@@ -13,7 +27,7 @@ GitHub renders the Chinese [`README.md`](./README.md) by default. This English f
 | llama.cpp / NInfer wire-field split | Implemented | NInfer never receives the unsupported `chat_template_kwargs` |
 | Compaction sampling + `max_tokens` floor | Implemented | Prevents client-side clamp from collapsing the summary budget |
 | Oversized-conversation chunked map-reduce rescue | Implemented | Handles compaction overflow after switching to a smaller-window model |
-| `/qwen38-compact` | Implemented | Manual model-summarized checkpoint |
+| `/gateway-compact` | Implemented | Manual model-summarized checkpoint |
 | `/clear-context` | Implemented | Manual zero-LLM hard reset to a fresh context window |
 | Compaction prompts visible on the settings page (read-only) | Implemented | Main instruction (dsh-compaction-basic), supplement rules, and the chunked-merge preamble are shown in the UI |
 | Compaction prompt optimization (supplement rules) | Implemented | Six supplement rules appended after the main instruction (recency weighting / verbatim fidelity / in-flight work / newest-wins conflicts / conversation-language output / no invention); toggleable; merge preamble rewritten with explicit consolidation rules |
@@ -78,7 +92,7 @@ These ratios apply to the **usable input budget**, not to the full 378144-token 
 |---|---|---:|---|---|---|
 | 80% warning | Auto check before each `minimal` step | minimal only | No | Logs current input tokens, budget, and remaining headroom; no session change | Trusted token meter and model window |
 | 98% auto summary compaction | Auto check before each `minimal` step | minimal only | Yes | Summarizes old history into a checkpoint, retains recent context; chunked for oversized input | Compaction engine loadable; agent maintainable |
-| `/qwen38-compact` | User types the command | All presets incl. minimal | Yes | Lossy but information-preserving summary compaction | Command enabled; agent idle; `dsh-compaction-basic` resolvable |
+| `/gateway-compact` | User types the command | All presets incl. minimal | Yes | Lossy but information-preserving summary compaction | Command enabled; agent idle; `dsh-compaction-basic` resolvable |
 | `/clear-context` | User types the command | All presets incl. minimal | No | Instant fresh model-visible window; old visible history dropped, raw event log kept | Agent idle; resetable history exists |
 
 The automatic policy never performs a hard reset by itself. Hard reset drops model-visible history and is reserved for explicit manual confirmation.
@@ -124,7 +138,7 @@ When a conversation grew under a large-window model and the route switched to a 
 
 If the body cannot be parsed safely, the model window is unknown, the slice count exceeds the cap, or a mid-flight failure occurs, the plugin fails open — it never fabricates a success.
 
-### 3. `/qwen38-compact`
+### 3. `/gateway-compact`
 
 Model summarization compaction. It replaces the compactable history with a summary checkpoint, preserving as much task information as possible, but summaries remain lossy and local 27B runs can be slow.
 
@@ -156,7 +170,7 @@ Some presets (e.g. `minimal`) do not mount DSH's official `dsh-compaction-basic`
 Configuration (all optional; the defaults are exactly the values below, editable on the settings page under "Automatic overflow rescue" and in Advanced):
 
 ```yaml
-qwen38-gateway-compaction:
+gateway-compaction:
   autoCompaction:
     enabled: true        # default true; false disables the whole feature
     thresholdRatio: 0.8  # pressure threshold, as a fraction of the effective window
@@ -174,7 +188,7 @@ qwen38-gateway-compaction:
 Settings file: `$DSH_HOME/settings.yaml`; for the dev profile, usually `~/.dsh-dev/settings.yaml`.
 
 ```yaml
-qwen38-gateway-compaction:
+gateway-compaction:
   models:
     - Qwen3.8-27B-GGUF
     - qwen3.8-27b
@@ -238,8 +252,10 @@ contextWindow - maxOutputTokens - ceil(contextWindow × safetyMarginRatio) > 0
 
 ```sh
 dsh-dev plugin --profile web add \
-  /home/wwt/Downloads/aigc/proj/deepseek/dsh-plugins/dsh-qwen38-gateway-compaction
+  /home/wwt/Downloads/aigc/proj/deepseek/dsh-plugins/dsh-gateway-compaction
 ```
+
+> Upgrading from the old name `dsh-qwen38-gateway-compaction`: remove the old plugin, `add` the new path (above), and rename the `qwen38-gateway-compaction:` section in `$DSH_HOME/settings.yaml` to `gateway-compaction:` (the section body is unchanged). Without this the new plugin runs on defaults and ignores your old settings.
 
 Restart the dev service after install or upgrade:
 
@@ -250,6 +266,8 @@ systemctl --user restart dsh-dev-web
 Remove:
 
 ```sh
+dsh-dev plugin --profile web rm dsh-gateway-compaction
+# still on the old name? remove it first:
 dsh-dev plugin --profile web rm dsh-qwen38-gateway-compaction
 ```
 

@@ -1,8 +1,22 @@
-# Qwen3.8 网关压缩与上下文管理插件
+# 本地网关压缩与上下文管理插件（dsh-gateway-compaction）
 
-`dsh-qwen38-gateway-compaction` 是 DeepSeek Harness（DSH）插件，面向本地 Qwen3.8 模型网关，支持 llama.cpp / Unsloth Studio 与 NInfer。
+`dsh-gateway-compaction` 是 DeepSeek Harness（DSH）插件，面向本地模型网关（llama.cpp / Unsloth Studio 与 NInfer），默认面向 **Qwen3.8-27B GGUF** 本地网关。
 
 GitHub 默认展示本文档。英文文档见 [`README.en.md`](./README.en.md)。
+
+## 适用模型
+
+本插件默认面向**本地 Qwen3.8 模型网关**（llama.cpp / Unsloth Studio 或 NInfer 网关）：
+
+| 项 | 说明 |
+|---|---|
+| 默认适用 | `Qwen3.8-27B-GGUF`（llama.cpp / Unsloth 侧模型 id）与 `qwen3.8-27b`（NInfer 网关 id，需同时填入 `ninModels`） |
+| 与 Qwen3 相关的部分 | 关思考 wire 字段（`chat_template_kwargs.enable_thinking` / `reasoning_effort`）依赖 Qwen3 的 chat template；内置采样参数是 Qwen3 非思考模式推荐值 |
+| 压缩机制本身 | 分片 map-reduce 救援、自动压缩救援、`/gateway-compact`、`/clear-context` 与具体模型无关 |
+| 扩展到其它模型 | 把目标模型 id 加入 `models`（NInfer 网关模型同时加入 `ninModels`）即可复用全部压缩机制；前提是网关支持上述 wire 字段 |
+| 不适用 | 非 OpenAI 兼容网关、以及关思考开关与 Qwen3 不同的模型族（需自行调整 wire 字段） |
+
+> 命名沿革：本插件原为 `dsh-qwen38-gateway-compaction`，2026-09-19 起改名 `dsh-gateway-compaction`（能力与适用模型不变；settings.yaml 段名同步为 `gateway-compaction`，升级时需把旧段 `qwen38-gateway-compaction:` 手工改名为 `gateway-compaction:`）。
 
 ## 当前能力
 
@@ -13,7 +27,7 @@ GitHub 默认展示本文档。英文文档见 [`README.en.md`](./README.en.md)�
 | llama.cpp / NInfer wire 字段分流 | 已实现 | NInfer 不发送其不支持的 `chat_template_kwargs` |
 | 压缩采样参数与 `max_tokens` 下限 | 已实现 | 避免客户端钳制把摘要输出预算压到极低 |
 | 超大对话分片 map-reduce 救援 | 已实现 | 处理大上下文模型切换到小上下文模型后的压缩溢出 |
-| `/qwen38-compact` | 已实现 | 手动调用模型生成摘要检查点 |
+| `/gateway-compact` | 已实现 | 手动调用模型生成摘要检查点 |
 | `/clear-context` | 已实现 | 手动丢弃模型可见历史，零 LLM 调用地开启新窗口 |
 | 设置页展示压缩提示词（只读） | 已实现 | 主压缩指令（dsh-compaction-basic）、补充规则、分片合并前言在设置页可见 |
 | 压缩提示词优化（补充规则 + 合并前言） | 已实现 | 主指令后追加 6 条补充规则（近期加权/逐字保真/进行中任务/冲突取最新/按会话语言/不虚构）；分片合并换成显式合并规则；补充规则可开关 |
@@ -78,7 +92,7 @@ autoCompactRatio   = 0.98
 |---|---|---|---:|---|---|
 | 80% 预警 | minimal 每轮开始前自动检查 | 仅 minimal | 否 | 记录当前输入 token、预算与剩余空间；不改变会话 | 能获得可信 token 计量与模型窗口 |
 | 98% 自动摘要压缩 | minimal 每轮开始前自动检查 | 仅 minimal | 是 | 总结旧历史为 checkpoint，保留近期上下文；超大输入走分片 | compaction engine 可加载，agent 当前可维护 |
-| `/qwen38-compact` | 用户手动输入命令 | 所有 preset，包括 minimal | 是 | 有损但尽量保留信息的摘要压缩 | 插件命令启用，agent 空闲，可解析 `dsh-compaction-basic` |
+| `/gateway-compact` | 用户手动输入命令 | 所有 preset，包括 minimal | 是 | 有损但尽量保留信息的摘要压缩 | 插件命令启用，agent 空闲，可解析 `dsh-compaction-basic` |
 | `/clear-context` | 用户手动输入命令 | 所有 preset，包括 minimal | 否 | 秒级开启新模型可见窗口；旧可见历史丢弃，原始事件日志保留 | agent 空闲且存在可重置历史 |
 
 自动策略不会自动执行硬重置。硬重置会丢弃模型可见历史，保留给用户明确手动确认。
@@ -124,7 +138,7 @@ autoCompactRatio   = 0.98
 
 无法安全解析、模型窗口未知、分片超过上限或中途失败时，插件 fail-open，不伪造成功结果。
 
-### 3. `/qwen38-compact`
+### 3. `/gateway-compact`
 
 这是模型摘要压缩。它会把当前可压缩历史替换为摘要检查点，尽量保留任务信息，但摘要本身仍然是有损的，并且本地 27B 模型可能耗时较长。
 
@@ -156,7 +170,7 @@ autoCompactRatio   = 0.98
 设置（全部可选，缺省即默认行为；在设置页「自动压缩救援」开关与高级参数中调整）：
 
 ```yaml
-qwen38-gateway-compaction:
+gateway-compaction:
   autoCompaction:
     enabled: true        # 默认 true；false 完全关闭本功能
     thresholdRatio: 0.8  # 预警阈值（对实际窗口）
@@ -174,7 +188,7 @@ qwen38-gateway-compaction:
 配置文件：`$DSH_HOME/settings.yaml`；开发 profile 通常是 `~/.dsh-dev/settings.yaml`。
 
 ```yaml
-qwen38-gateway-compaction:
+gateway-compaction:
   models:
     - Qwen3.8-27B-GGUF
     - qwen3.8-27b
@@ -236,8 +250,10 @@ contextWindow - maxOutputTokens - ceil(contextWindow × safetyMarginRatio) > 0
 
 ```sh
 dsh-dev plugin --profile web add \
-  /home/wwt/Downloads/aigc/proj/deepseek/dsh-plugins/dsh-qwen38-gateway-compaction
+  /home/wwt/Downloads/aigc/proj/deepseek/dsh-plugins/dsh-gateway-compaction
 ```
+
+> 从旧名 `dsh-qwen38-gateway-compaction` 升级：先 `rm` 旧插件再 `add` 新路径（见上），并把 `$DSH_HOME/settings.yaml` 里的 `qwen38-gateway-compaction:` 段名改成 `gateway-compaction:`（段内容不变），否则新插件按默认值运行、读不到旧配置。
 
 安装或升级后重启开发服务：
 
@@ -248,7 +264,7 @@ systemctl --user restart dsh-dev-web
 卸载：
 
 ```sh
-dsh-dev plugin --profile web rm dsh-qwen38-gateway-compaction
+dsh-dev plugin --profile web rm dsh-gateway-compaction
 ```
 
 ## Codex token budget 对本插件的启示

@@ -197,7 +197,7 @@
  *
  * Configuration precedence (re-projected on every LLM call, so settings.yaml
  * edits apply without a restart):
- *   1. `qwen38-gateway-compaction:` section of `$DSH_HOME/settings.yaml`
+ *   1. `gateway-compaction:` section of `$DSH_HOME/settings.yaml`
  *   2. the `config:` block of this plugin's row in the profile's
  *      `cordis.patch.yml`
  *   3. built-in defaults (effort `"off"`, purposes `["compaction"]`,
@@ -218,7 +218,7 @@ import z from "@deepseek-ai/schemastery";
 const settingsApi = await import("@deepseek-ai/dsh-settings").catch(() => null);
 
 /** Cordis plugin name used by loader diagnostics. */
-const name = "qwen38-gateway-compaction";
+const name = "gateway-compaction";
 /** Hard dependency: the LLM service owns the `llm/stream` waterfall. */
 const inject = ["llm"];
 
@@ -332,7 +332,7 @@ const ChunkingConfig = z.object({
 });
 
 /**
- * Manual compaction command config (feature 3). The `/qwen38-compact` slash
+ * Manual compaction command config (feature 3). The `/gateway-compact` slash
  * command runs the official dsh-compaction-basic manual transaction on the
  * receiving session — including sessions whose agent preset ships no
  * compaction engine at all (e.g. the minimal preset), where neither automatic
@@ -344,7 +344,7 @@ const ChunkingConfig = z.object({
  * replaced by a fixed marker and the model continues from environment state.
  */
 const CommandConfig = z.object({
-  /** Master switch for the `/qwen38-compact` command. Default `true`. */
+  /** Master switch for the `/gateway-compact` command. Default `true`. */
   enabled: z.boolean().default(true),
   /** The `/clear-context` hard-reset command. Default `{ enabled: true }`. */
   newContext: z.object({
@@ -443,7 +443,7 @@ const Config = z.object({
   supplementOn: z.boolean().default(true),
   /** Oversized-compaction rescue policy (feature 2); see ChunkingConfig. */
   chunking: ChunkingConfig.default({}),
-  /** Manual commands (`/qwen38-compact`, `/clear-context`); see CommandConfig. */
+  /** Manual commands (`/gateway-compact`, `/clear-context`); see CommandConfig. */
   command: CommandConfig.default({}),
   /**
    * Automatic overflow/pressure rescue for presets without a built-in
@@ -453,7 +453,7 @@ const Config = z.object({
 });
 
 /** Settings namespace carrying this plugin's policy (plain string; both dsh-settings generations validate the same kebab-case pattern). */
-const COMPACT_EFFORT_SETTINGS_NAMESPACE = "qwen38-gateway-compaction";
+const COMPACT_EFFORT_SETTINGS_NAMESPACE = "gateway-compaction";
 
 /**
  * First line of the dsh-compaction-basic summarization instruction, which the
@@ -478,7 +478,7 @@ export const TITLE_SIGNATURE = "Create a concise title for an AI coding-assistan
  * internal calls reusing the rewritten final message) is never double-appended.
  */
 export const SUPPLEMENT_MARKER =
-  "Additional compaction requirements (appended by dsh-qwen38-gateway-compaction";
+  "Additional compaction requirements (appended by dsh-gateway-compaction";
 
 /**
  * Supplementary compaction requirements appended by this plugin AFTER the
@@ -528,7 +528,7 @@ export const MERGE_PREAMBLE = [
 ].join("\n");
 
 /** Marks the wrapped global fetch so `apply` never double-wraps. */
-const FETCH_WRAPPER_MARK = Symbol.for("qwen38-gateway-compaction.fetch-wrapper");
+const FETCH_WRAPPER_MARK = Symbol.for("gateway-compaction.fetch-wrapper");
 
 /**
  * Current policy config source, rebound by every `apply` so a re-apply
@@ -970,7 +970,7 @@ function shrinkText(text, targetLen) {
   if (text.length <= targetLen) return text;
   const headLen = Math.floor(targetLen * 0.7);
   const tailLen = Math.floor(targetLen * 0.25);
-  return `${text.slice(0, headLen)}\n[... dsh-qwen38-gateway-compaction: truncated ${text.length - headLen - tailLen} chars to fit the chunk budget ...]\n${text.slice(text.length - tailLen)}`;
+  return `${text.slice(0, headLen)}\n[... dsh-gateway-compaction: truncated ${text.length - headLen - tailLen} chars to fit the chunk budget ...]\n${text.slice(text.length - tailLen)}`;
 }
 
 /**
@@ -1341,7 +1341,7 @@ async function resolveChunkWindow(policy, body, input, originalFetch, ctx) {
   if (!missingWindowWarnings.has(model)) {
     missingWindowWarnings.add(model);
     ctx?.logger?.warn?.(
-      `qwen38-gateway-compaction: model "${model}" has no resolvable context window (not set on the plugin settings page, no ${"/v1/models"} disclosure, no dsh model-config declaration); oversized compaction for it stays disabled. Set its context window on the plugin settings page, or declare contextWindow for "${model}" under its llm-pi-ai provider.`
+      `gateway-compaction: model "${model}" has no resolvable context window (not set on the plugin settings page, no ${"/v1/models"} disclosure, no dsh model-config declaration); oversized compaction for it stays disabled. Set its context window on the plugin settings page, or declare contextWindow for "${model}" under its llm-pi-ai provider.`
     );
   }
   return undefined;
@@ -1402,14 +1402,14 @@ export async function chunkedCompactionRescue(ctx, originalFetch, input, init, p
   const sliced = sliceMessages(rangeMessages, sliceBudget);
   if (sliced === null || sliced.slices.length > cfg.maxChunks) {
     ctx.logger.warn(
-      `qwen38-gateway-compaction: compaction prompt (~${estimated} tokens) exceeds the chunk budget for "${body.model}" and cannot be split within maxChunks=${cfg.maxChunks}; forwarding the original request (it will likely overflow)`
+      `gateway-compaction: compaction prompt (~${estimated} tokens) exceeds the chunk budget for "${body.model}" and cannot be split within maxChunks=${cfg.maxChunks}; forwarding the original request (it will likely overflow)`
     );
     return undefined;
   }
   const { prefix, slices } = sliced;
   const sliceTokens = slices.map((slice) => slice.reduce((sum, m) => sum + estimateMessageTokens(m), 0));
   ctx.logger.info(
-    `qwen38-gateway-compaction: compaction prompt (~${estimated} tokens) exceeds one call for "${body.model}" (window ${window}, budget ${callBudget}); running chunked map-reduce with ${slices.length} slices + merge`
+    `gateway-compaction: compaction prompt (~${estimated} tokens) exceeds one call for "${body.model}" (window ${window}, budget ${callBudget}); running chunked map-reduce with ${slices.length} slices + merge`
   );
   const model = typeof body.model === "string" ? body.model : "unknown";
   const id = `chatcmpl-dshfix-${Math.random().toString(16).slice(2, 18)}`;
@@ -1444,7 +1444,7 @@ export async function chunkedCompactionRescue(ctx, originalFetch, input, init, p
     // first, then the two results. Bounded depth; a final overflow throws and
     // degrades to the safe empty-summary outcome.
     if (estimateMergeInput(partials) <= callBudget || depth >= 2) return runMerge(buildMergeMessages(partials));
-    ctx.logger.info(`qwen38-gateway-compaction: merge input (~${estimateMergeInput(partials)} tokens) exceeds one call; merging ${partials.length} partials hierarchically`);
+    ctx.logger.info(`gateway-compaction: merge input (~${estimateMergeInput(partials)} tokens) exceeds one call; merging ${partials.length} partials hierarchically`);
     const mid = Math.ceil(partials.length / 2);
     const left = await mergePartials(partials.slice(0, mid), depth + 1);
     const right = await mergePartials(partials.slice(mid), depth + 2);
@@ -1454,13 +1454,13 @@ export async function chunkedCompactionRescue(ctx, originalFetch, input, init, p
   const work = (async () => {
     const partials = [];
     for (let i = 0; i < slices.length; i++) {
-      ctx.logger.info(`qwen38-gateway-compaction: summarizing slice ${i + 1}/${slices.length} (~${sliceTokens[i]} tokens)`);
+      ctx.logger.info(`gateway-compaction: summarizing slice ${i + 1}/${slices.length} (~${sliceTokens[i]} tokens)`);
       const chunkBody = buildInternalBody(body, [...prefix, ...slices[i], { role: "user", content: instructionText }], cfg.chunkMaxTokens);
       const result = await withRetry(() => internalCall(originalFetch, baseReq, chunkBody));
       if (result.content.length === 0) throw new Error(`slice ${i + 1}/${slices.length} produced no summary text`);
       partials.push(result.content);
     }
-    ctx.logger.info(`qwen38-gateway-compaction: merging ${partials.length} partial checkpoints into the final checkpoint`);
+    ctx.logger.info(`gateway-compaction: merging ${partials.length} partial checkpoints into the final checkpoint`);
     return mergePartials(partials, 0);
   })();
 
@@ -1468,12 +1468,12 @@ export async function chunkedCompactionRescue(ctx, originalFetch, input, init, p
     // Non-streaming original: await the work and answer with plain JSON.
     try {
       const content = await work;
-      ctx.logger.info(`qwen38-gateway-compaction: chunked compaction complete (${content.length} chars)`);
+      ctx.logger.info(`gateway-compaction: chunked compaction complete (${content.length} chars)`);
       return jsonResponse(id, created, model, content);
     } catch (error) {
       // Fail to the same safe outcome as today's overflow: an empty summary,
       // which dsh-compaction-basic rejects and the surface is preserved.
-      ctx.logger.error(`qwen38-gateway-compaction: chunked compaction failed (${error?.message ?? error}); returning an empty summary so the harness keeps the conversation surface`);
+      ctx.logger.error(`gateway-compaction: chunked compaction failed (${error?.message ?? error}); returning an empty summary so the harness keeps the conversation surface`);
       return jsonResponse(id, created, model, "");
     }
   }
@@ -1503,10 +1503,10 @@ export async function chunkedCompactionRescue(ctx, originalFetch, input, init, p
       }
     }
     if (state.error !== undefined) {
-      ctx.logger.error(`qwen38-gateway-compaction: chunked compaction failed (${state.error?.message ?? state.error}); ending the stream with an empty summary so the harness keeps the conversation surface`);
+      ctx.logger.error(`gateway-compaction: chunked compaction failed (${state.error?.message ?? state.error}); ending the stream with an empty summary so the harness keeps the conversation surface`);
       yield sseChunk(id, created, model, { content: "" }, "stop");
     } else {
-      ctx.logger.info(`qwen38-gateway-compaction: chunked compaction complete (${state.value.length} chars)`);
+      ctx.logger.info(`gateway-compaction: chunked compaction complete (${state.value.length} chars)`);
       yield sseChunk(id, created, model, { content: state.value });
       yield sseChunk(id, created, model, {}, "stop");
     }
@@ -1557,7 +1557,7 @@ function installSamplingFetch(ctx, readPolicy) {
           const keys = (Array.isArray(policy.entries) ? policy.entries : []).map(([key]) => key).join(", ");
           const floorNote = policy.floor > 0 ? `; max_tokens floor ${policy.floor}` : "";
           ctx.logger.info(
-            `qwen38-gateway-compaction: rewriting compaction request bodies (thinking off${keys.length > 0 ? `, sampling: ${keys}` : ""}${floorNote})`
+            `gateway-compaction: rewriting compaction request bodies (thinking off${keys.length > 0 ? `, sampling: ${keys}` : ""}${floorNote})`
           );
         }
         applied += 1;
@@ -1580,7 +1580,7 @@ function installSamplingFetch(ctx, readPolicy) {
           /* Never break LLM traffic: proceed with the untouched request. */
         }
         if (titleRewritten && titleApplied === 0) {
-          ctx.logger.info(`qwen38-gateway-compaction: rewriting session-title request bodies (thinking off)`);
+          ctx.logger.info(`gateway-compaction: rewriting session-title request bodies (thinking off)`);
         }
         if (titleRewritten) titleApplied += 1;
       }
@@ -1610,11 +1610,11 @@ function chooseEffort(configured, offeredIds) {
 }
 
 // ---------------------------------------------------------------------------
-// Feature 3 — manual compaction command (/qwen38-compact)
+// Feature 3 — manual compaction command (/gateway-compact)
 // ---------------------------------------------------------------------------
 
 /** Command names users type in the composer. */
-const MANUAL_COMPACT_COMMAND = "qwen38-compact";
+const MANUAL_COMPACT_COMMAND = "gateway-compact";
 const MANUAL_NEW_CONTEXT_COMMAND = "clear-context";
 
 /**
@@ -1710,7 +1710,7 @@ function manualCompactFailureText(error, { hardReset = false } = {}) {
 }
 
 /**
- * Register the global manual commands (`/qwen38-compact` and, when enabled,
+ * Register the global manual commands (`/gateway-compact` and, when enabled,
  * `/clear-context`). The engines and the commands live inside an
  * injected child context that declares exactly the services the manual
  * transaction needs (`commands`, `tokenMeter`, `sessions`; `llm` is inherited
@@ -2073,19 +2073,19 @@ function registerAutoRescue(ctx, readPolicy) {
   if (typeof ctx.get !== "function") {
     try {
       ctx.logger?.warn?.(
-        "qwen38-gateway-compaction: ctx.get is unavailable on this harness; the automatic overflow rescue is disabled (built-in detection is impossible); the manual commands still work"
+        "gateway-compaction: ctx.get is unavailable on this harness; the automatic overflow rescue is disabled (built-in detection is impossible); the manual commands still work"
       );
     } catch { /* logging unavailable: stay silent */ }
     return;
   }
   const warn = (message) => {
     try {
-      ctx.logger?.warn?.(`qwen38-gateway-compaction: ${message}`);
+      ctx.logger?.warn?.(`gateway-compaction: ${message}`);
     } catch { /* logging unavailable */ }
   };
   const info = (message) => {
     try {
-      ctx.logger?.info?.(`qwen38-gateway-compaction: ${message}`);
+      ctx.logger?.info?.(`gateway-compaction: ${message}`);
     } catch { /* logging unavailable */ }
   };
 
@@ -2415,7 +2415,7 @@ function apply(ctx, config = {}) {
         if (!warned.has(key)) {
           warned.add(key);
           ctx.logger.warn(
-            `qwen38-gateway-compaction: model "${key}" offers no expressible reasoning effort (configured "${configured}") and the wire thinking-off gates are disabled; compaction keeps the model default`
+            `gateway-compaction: model "${key}" offers no expressible reasoning effort (configured "${configured}") and the wire thinking-off gates are disabled; compaction keeps the model default`
           );
         }
       }

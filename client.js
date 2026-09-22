@@ -1,5 +1,5 @@
 /**
- * dsh-qwen38-gateway-compaction — browser half (self-contained client bundle).
+ * dsh-gateway-compaction — browser half (self-contained client bundle).
  *
  * Hand-written on purpose: the dsh web shell serves this file verbatim into the
  * page module table (package.json `dsh.client` + `./client` export), so it must
@@ -12,7 +12,7 @@
  *     slot; the one home every built-in plugin uses; no extra left-nav entry), and
  *   - on dsh ≥ 0.1.6 (ui-plugin-manager): the same form on the bundle's page in the
  *     sidebar 插件 panel, registered into the `plugins.bundle.config` slot keyed by
- *     this package's name. Both surfaces edit the same `qwen38-gateway-compaction`
+ *     this package's name. Both surfaces edit the same `gateway-compaction`
  *     settings namespace.
  *   - on both surfaces: a read-only “压缩提示词” (compaction prompts) section
  *     showing the exact text that shapes summary quality — the main compaction
@@ -20,10 +20,10 @@
  *     supplement rules (toggleable), and this plugin's chunked-merge preamble.
  *     Display only: changing any of these texts requires a harness/plugin code
  *     change, not a setting.
- * It edits the `qwen38-gateway-compaction` settings namespace.
+ * It edits the `gateway-compaction` settings namespace.
  */
 window.__ModuleLoader__.load({
-	id: 'dsh-qwen38-gateway-compaction',
+	id: 'dsh-gateway-compaction',
 	factory: (require) => {
 		var module = { exports: {} };
 		var exports = module.exports;
@@ -34,17 +34,17 @@ window.__ModuleLoader__.load({
 		const { createSnapshotStore } = require('@deepseek-ai/dsh-client-store');
 
 		/** Settings namespace this card edits (must match the Host half). */
-		const NS = 'qwen38-gateway-compaction';
+		const NS = 'gateway-compaction';
 
 		// ------------------------------------------------------------------
 		// Locale dictionaries (flat key -> string, zh primary / en fallback).
 		// ------------------------------------------------------------------
 		const LOCALES = {
 			zh: {
-				title: 'Qwen3.8 网关压缩修复',
-				description: '让本地网关(llama.cpp 与 NInfer)上的 Qwen3.8 会话压缩可靠完成:辅助调用按引擎写入对应的关思考字段(llama.cpp: chat_template_kwargs.enable_thinking;NInfer: reasoning_effort),并用非思考模式推荐采样参数;超大对话自动分片压缩。保存后实时生效,无需重启。',
+				title: '本地网关压缩与上下文管理',
+				description: '适用模型:本地 Qwen3 系网关(llama.cpp / Unsloth Studio 与 NInfer,默认 Qwen3.8-27B GGUF;其他模型把 id 加入「适用模型 ID」)。让本地网关上的会话压缩可靠完成:辅助调用按引擎写入对应的关思考字段(llama.cpp: chat_template_kwargs.enable_thinking;NInfer: reasoning_effort),并用非思考模式推荐采样参数;超大对话自动分片压缩;无内置压缩引擎的 preset 自动溢出救援。保存后实时生效,无需重启。',
 				scopeNote: '作用域:本页全部参数只作用于「压缩摘要」与「会话标题」两类辅助调用。正常对话完全不受影响,仍使用你网关(llama.cpp/NInfer)的默认参数。NInfer 模型请把模型 id 同时填入 ninModels(设置页不展示该项,见 settings.yaml),否则会对 NInfer 网关误发 chat_template_kwargs 导致 400。',
-				commandHint: '手动操作:在任意会话输入框输入 /qwen38-compact(模型总结,保信息,大会话走分片)或 /clear-context(硬重置:不调模型、秒级完成、历史丢弃)。极简模式等无内置压缩引擎的会话也可用。',
+				commandHint: '手动操作:在任意会话输入框输入 /gateway-compact(模型总结,保信息,大会话走分片)或 /clear-context(硬重置:不调模型、秒级完成、历史丢弃)。极简模式等无内置压缩引擎的会话也可用。',
 				basicTitle: '基础设置',
 				advancedTitle: '高级参数(仅作用于压缩/标题调用)',
 				modelsLabel: '适用模型 ID',
@@ -100,7 +100,7 @@ window.__ModuleLoader__.load({
 				tipChunkMaxTokens: '依赖「超大对话分片救援」开启。单个分片摘要的输出上限(token)。',
 				tipMergeMaxTokens: '依赖「超大对话分片救援」开启。最终合并 checkpoint 的输出上限(token)。',
 				tipMaxChunks: '依赖「超大对话分片救援」开启。单次救援的分片数安全上限;超出的区间 fail-open(转发原请求并告警)。',
-				tipNewContext: '独立项(不依赖其他项)。语义与 /qwen38-compact 不同:本命令不调用模型、不做摘要——直接把模型可见历史丢弃并写入新窗口标记,秒级完成、零 token 成本。适合任务状态都在文件/git 里的场景;纯问答会话(状态不在环境里)建议用 /qwen38-compact。',
+				tipNewContext: '独立项(不依赖其他项)。语义与 /gateway-compact 不同:本命令不调用模型、不做摘要——直接把模型可见历史丢弃并写入新窗口标记,秒级完成、零 token 成本。适合任务状态都在文件/git 里的场景;纯问答会话(状态不在环境里)建议用 /gateway-compact。',
 				promptTitle: '压缩提示词(只读展示)',
 				promptNote: '压缩质量由下面三段提示词决定,此区只读展示、不可编辑:第 1 段是 dsh 官方压缩组件(dsh-compaction-basic,harness 源码)的指令,本插件每次压缩原样复用;第 2 段是本插件可选追加的补充规则(见下方开关);第 3 段是本插件在触发分片救援时补的合并前言。要修改内容需要改 harness/插件源码。',
 				mainPromptTitle: '主压缩指令 — 来源:dsh-compaction-basic(harness 0.1.6-alpha.2 参考副本)',
@@ -121,10 +121,10 @@ window.__ModuleLoader__.load({
 				mergePromptNote: '历史大到单次装不下时,插件按顺序逐片摘要,再用「这段前言 + 各片部分摘要 + 上面的主指令」做最终合并。',
 			},
 			en: {
-				title: 'Qwen3.8 gateway compaction fix',
-				description: 'Makes session compaction reliable on local Qwen3.8 gateways (llama.cpp AND NInfer): engine-appropriate thinking-off wire fields + non-thinking sampling for auxiliary calls; oversized conversations compact in chunks. Changes apply live, no restart.',
+				title: 'Local gateway compaction & context management',
+				description: 'Applies to local Qwen3 gateways (llama.cpp / Unsloth Studio AND NInfer; default Qwen3.8-27B GGUF — other models: add their ids to "Model ids"). Makes session compaction reliable: engine-appropriate thinking-off wire fields + non-thinking sampling for auxiliary calls; oversized conversations compact in chunks; presets without a built-in engine get automatic overflow rescue. Changes apply live, no restart.',
 				scopeNote: 'Scope: every parameter on this page applies ONLY to auxiliary calls — compaction summaries and session titles. Normal conversation is untouched and keeps your gateway defaults (llama.cpp/NInfer).',
-				commandHint: 'Manual operations: type /qwen38-compact (model-summarized, keeps information, chunked when oversized) or /clear-context (hard reset: no LLM call, instant, history discarded) in any session composer. Works even in presets without a built-in compaction engine.',
+				commandHint: 'Manual operations: type /gateway-compact (model-summarized, keeps information, chunked when oversized) or /clear-context (hard reset: no LLM call, instant, history discarded) in any session composer. Works even in presets without a built-in compaction engine.',
 				basicTitle: 'Basics',
 				advancedTitle: 'Advanced (auxiliary calls only)',
 				modelsLabel: 'Model ids',
@@ -178,7 +178,7 @@ window.__ModuleLoader__.load({
 				tipChunkMaxTokens: 'Depends on “oversized-compaction chunked rescue” being on. Per-slice summary output cap (tokens).',
 				tipMergeMaxTokens: 'Depends on “oversized-compaction chunked rescue” being on. Final merged-checkpoint output cap (tokens).',
 				tipMaxChunks: 'Depends on “oversized-compaction chunked rescue” being on. Safety cap on slices per rescue; ranges beyond it fail open (forward the original request with a warning).',
-				tipNewContext: 'Independent item (no dependencies). Different semantics from /qwen38-compact: this command makes NO LLM call and writes no summary — it discards the model-visible history and installs a fresh-window marker, instantly and at zero token cost. Best when task state lives in files/git; for pure Q&A sessions (state not in the environment) prefer /qwen38-compact.',
+				tipNewContext: 'Independent item (no dependencies). Different semantics from /gateway-compact: this command makes NO LLM call and writes no summary — it discards the model-visible history and installs a fresh-window marker, instantly and at zero token cost. Best when task state lives in files/git; for pure Q&A sessions (state not in the environment) prefer /gateway-compact.',
 				promptTitle: 'Compaction prompts (read-only)',
 				promptNote: 'Summary quality is set by the three prompts below. This section is display-only: (1) the official dsh-compaction-basic instruction (harness source), reused verbatim on every compaction; (2) the optional supplement rules this plugin appends (toggle below); (3) the merge preamble this plugin adds when chunked rescue fires. Changing any of them requires a code change.',
 				mainPromptTitle: 'Main compaction instruction — source: dsh-compaction-basic (harness 0.1.6-alpha.2 reference copy)',
@@ -253,7 +253,7 @@ Rules:
 		 * appended after the main instruction on every compaction call when
 		 * `supplementOn` is true. test/prompt-sync.mjs asserts it stays in
 		 * lockstep with the host export. */
-		const SUPPLEMENT_TEXT = `Additional compaction requirements (appended by dsh-qwen38-gateway-compaction plugin; where these conflict with the instruction above, THESE RULES WIN):
+		const SUPPLEMENT_TEXT = `Additional compaction requirements (appended by dsh-gateway-compaction plugin; where these conflict with the instruction above, THESE RULES WIN):
 
 1. Recency weighting: weight the most recent exchanges most heavily. Compress older material more aggressively, but never drop a decision, constraint, correction, or open question that still applies.
 2. Verbatim fidelity: preserve exact file paths, commands, ports and numeric values, identifiers, and error strings; quote the user's own words for instructions and corrections.
@@ -553,7 +553,7 @@ Merging rules:
 			/** The face the slot entry injects into the card component. */
 			inject() {
 				return {
-					hooks: { qwen38Card: this.store },
+					hooks: { gatewayCard: this.store },
 					edit: (id, text) => this.edit(id, text),
 					resetField: (id) => this.resetField(id),
 					editWindow: (model, text) => this.editWindow(model, text),
@@ -823,7 +823,7 @@ Merging rules:
 				),
 				open
 					? h('div', { style: cardBodyStyle },
-						h(Fields, Object.assign({ idPrefix: 'plugin-config-qwen38' }, props)),
+						h(Fields, Object.assign({ idPrefix: 'plugin-config-gateway' }, props)),
 					)
 					: null,
 			);
@@ -837,7 +837,7 @@ Merging rules:
 		 */
 		function BundleConfig(props) {
 			if (props.view !== 'page') return null;
-			return h(Fields, Object.assign({ idPrefix: 'plugin-config-qwen38-plugins' }, props));
+			return h(Fields, Object.assign({ idPrefix: 'plugin-config-gateway-plugins' }, props));
 		}
 
 		// ------------------------------------------------------------------
@@ -870,7 +870,7 @@ Merging rules:
 			// that ship no Plugins page the entry is simply never rendered.
 			ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
 				name: 'plugins.bundle.config',
-				key: 'dsh-qwen38-gateway-compaction',
+				key: 'dsh-gateway-compaction',
 				locale: NS,
 				inject: () => controller.inject(),
 			}, BundleConfig));

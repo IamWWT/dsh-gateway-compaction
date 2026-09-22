@@ -117,7 +117,7 @@ const fakeCtx = {
   },
   settingsScope: {
     bind: (spec) => {
-      assert.equal(spec.namespace, 'qwen38-gateway-compaction')
+      assert.equal(spec.namespace, 'gateway-compaction')
       return fakeScope
     },
   },
@@ -139,7 +139,7 @@ vm.createContext(sandbox)
 vm.runInContext(readFileSync(`${ROOT}client.js`, 'utf8'), sandbox, { filename: 'client.js' })
 
 assert.equal(loaded.length, 1, 'exactly one module registered')
-assert.equal(loaded[0].id, 'dsh-qwen38-gateway-compaction')
+assert.equal(loaded[0].id, 'dsh-gateway-compaction')
 
 const plugin = loaded[0].factory((specifier) => {
   if (specifier === 'react') return ReactStub
@@ -148,7 +148,7 @@ const plugin = loaded[0].factory((specifier) => {
   throw new Error(`unexpected require: ${specifier}`)
 })
 
-assert.equal(plugin.name, 'qwen38-gateway-compaction')
+assert.equal(plugin.name, 'gateway-compaction')
 assert.deepEqual([...plugin.inject].sort(), ['locale', 'settingsScope', 'slots'])
 
 // ---------------------------------------------------------------------------
@@ -157,7 +157,7 @@ assert.deepEqual([...plugin.inject].sort(), ['locale', 'settingsScope', 'slots']
 plugin.apply(fakeCtx)
 assert.equal(effects, 1)
 assert.equal(localeRegisters.length, 1)
-assert.equal(localeRegisters[0].ns, 'qwen38-gateway-compaction')
+assert.equal(localeRegisters[0].ns, 'gateway-compaction')
 for (const lang of ['zh', 'en']) {
   const dict = localeRegisters[0].dict[lang]
   assert.ok(dict && typeof dict.title === 'string' && dict.title.length > 0, `locale ${lang} has title`)
@@ -173,26 +173,26 @@ for (const lang of ['zh', 'en']) {
 assert.equal(slotEntries.length, 2, 'exactly two surfaces registered: settings-tab card + plugin-manager bundle card')
 const entry = slotEntries.find((e) => e.options.name === 'settings.plugin.item')
 assert.ok(entry, 'settings-tab card entry present')
-assert.equal(entry.options.key, 'qwen38-gateway-compaction')
-assert.equal(entry.options.locale, 'qwen38-gateway-compaction')
+assert.equal(entry.options.key, 'gateway-compaction')
+assert.equal(entry.options.locale, 'gateway-compaction')
 assert.equal(typeof entry.component, 'function')
 const face = entry.options.inject()
-assert.ok(face.hooks.qwen38Card, 'face exposes the card store hook')
+assert.ok(face.hooks.gatewayCard, 'face exposes the card store hook')
 for (const fn of ['edit', 'resetField', 'save', 'discard', 'toggleOpen']) assert.equal(typeof face[fn], 'function')
 
 const bundleEntry = slotEntries.find((e) => e.options.name === 'plugins.bundle.config')
 assert.ok(bundleEntry, 'plugin-manager bundle card entry present')
-assert.equal(bundleEntry.options.key, 'dsh-qwen38-gateway-compaction')
+assert.equal(bundleEntry.options.key, 'dsh-gateway-compaction')
 assert.equal(typeof bundleEntry.component, 'function')
 const bundleFace = bundleEntry.options.inject()
-assert.ok(bundleFace.hooks.qwen38Card, 'bundle face exposes the card store hook')
-assert.equal(bundleFace.hooks.qwen38Card, face.hooks.qwen38Card, 'both surfaces share one controller')
+assert.ok(bundleFace.hooks.gatewayCard, 'bundle face exposes the card store hook')
+assert.equal(bundleFace.hooks.gatewayCard, face.hooks.gatewayCard, 'both surfaces share one controller')
 
 // ---------------------------------------------------------------------------
 // Render pass 1: base value + one user override.
 // ---------------------------------------------------------------------------
 const t = (key) => localeRegisters[0].dict.zh[key]
-let props = { t, useQwen38Card: (sel) => sel(face.hooks.qwen38Card.getSnapshot()) }
+let props = { t, useQwen38Card: (sel) => sel(face.hooks.gatewayCard.getSnapshot()) }
 
 // Collapsible card, same reading gesture as the built-in plugin cards: closed
 // by default, the header is the disclosure button, and a settled save closes it
@@ -200,16 +200,16 @@ let props = { t, useQwen38Card: (sel) => sel(face.hooks.qwen38Card.getSnapshot()
 const closedHtml = render(entry.component(props))
 assert.match(closedHtml, /aria-expanded="false"/, 'card starts collapsed')
 assert.ok(!/maxTokensFloor/.test(closedHtml), 'collapsed card hides its controls')
-assert.match(closedHtml, /Qwen3\.8 网关压缩修复/, 'collapsed card still names the plugin')
+assert.match(closedHtml, /本地网关压缩与上下文管理/, 'collapsed card still names the plugin')
 face.toggleOpen()
-assert.equal(face.hooks.qwen38Card.getSnapshot().open, true, 'toggleOpen opens the card')
+assert.equal(face.hooks.gatewayCard.getSnapshot().open, true, 'toggleOpen opens the card')
 const renderCard = () => {
-  if (!face.hooks.qwen38Card.getSnapshot().open) face.toggleOpen()
+  if (!face.hooks.gatewayCard.getSnapshot().open) face.toggleOpen()
   return render(entry.component(props))
 }
 
 let html = renderCard()
-assert.match(html, /Qwen3\.8 网关压缩修复/, 'card title renders')
+assert.match(html, /本地网关压缩与上下文管理/, 'card title renders')
 assert.match(html, /Qwen3\.8-27B-GGUF/, 'model id renders')
 assert.match(html, /262144/, 'context window renders')
 assert.match(html, /20000/, 'user-overridden maxTokensFloor renders (not the base 16384)')
@@ -219,7 +219,7 @@ assert.match(html, /作用域/, 'card carries the scope banner')
 
 // The manual-command hint moved into the card body (the dedicated left-nav
 // section is gone), so the plugins tab remains the single, complete home.
-assert.match(html, /\/qwen38-compact/, 'card body shows the manual command hint')
+assert.match(html, /\/gateway-compact/, 'card body shows the manual command hint')
 
 // The dsh ≥ 0.1.6 plugin page renders the identical fields without the card
 // chrome (the page draws the title/frame itself); outside that surface the
@@ -232,18 +232,18 @@ assert.equal(render(bundleEntry.component(props)), '', 'bundle entry renders not
 // ---------------------------------------------------------------------------
 // v0.4 UI: enum dropdown, hover tooltips, rescue-gated dimming.
 // ---------------------------------------------------------------------------
-assert.match(html, /<select[^>]*id="plugin-config-qwen38-wireReasoning"/, 'wireReasoning renders as a select')
+assert.match(html, /<select[^>]*id="plugin-config-gateway-wireReasoning"/, 'wireReasoning renders as a select')
 assert.match(html, /<option [^>]*value="none">none<\/option>/, 'select offers none')
 assert.match(html, /<option [^>]*value="high">high<\/option>/, 'select offers high')
 assert.match(html, /不写该字段/, 'select offers the omit option')
 assert.match(html, /title="根开关/, 'models label carries a dependency tooltip (root switch)')
 assert.match(html, /title="独立项/, 'independent fields state they are independent in the tooltip')
 assert.match(html, /title="「分片救援」组的总开关/, 'rescue switch tooltip names its dependent group')
-assert.equal(face.hooks.qwen38Card.getSnapshot().rescueOn, true, 'rescue on by default → chunking group live')
+assert.equal(face.hooks.gatewayCard.getSnapshot().rescueOn, true, 'rescue on by default → chunking group live')
 
 // Turn the rescue switch off: snapshot flips and the chunking rows dim.
 face.edit('chunkingEnabled', 'false')
-assert.equal(face.hooks.qwen38Card.getSnapshot().rescueOn, false, 'staged rescue-off flips the gate')
+assert.equal(face.hooks.gatewayCard.getSnapshot().rescueOn, false, 'staged rescue-off flips the gate')
 html = renderCard()
 assert.match(html, /依赖「超大对话分片救援」开启——当前已停用/, 'rescue-off note appears in the chunking group')
 face.discard()
@@ -252,7 +252,7 @@ face.discard()
 // Edit + save: staged text becomes a set op with the nested path.
 // ---------------------------------------------------------------------------
 face.edit('maxTokensFloor', '32768')
-props = { t, useQwen38Card: (sel) => sel(face.hooks.qwen38Card.getSnapshot()) }
+props = { t, useQwen38Card: (sel) => sel(face.hooks.gatewayCard.getSnapshot()) }
 html = renderCard()
 assert.match(html, /32768/, 'edited value renders before save')
 assert.match(html, /未保存/, 'dirty card carries the unsaved tag on its header')
@@ -273,7 +273,7 @@ assert.equal(mutateCalls[0].expectedRevision, 3)
 // Invalid number blocks the save.
 // ---------------------------------------------------------------------------
 face.edit('maxTokensFloor', 'abc')
-props = { t, useQwen38Card: (sel) => sel(face.hooks.qwen38Card.getSnapshot()) }
+props = { t, useQwen38Card: (sel) => sel(face.hooks.gatewayCard.getSnapshot()) }
 html = renderCard()
 assert.match(html, /<button[^>]*>保存<\/button>/, 'save button present while dirty')
 await face.save()
@@ -282,23 +282,23 @@ assert.equal(mutateCalls.length, 1, 'invalid field blocks the save')
 // resetField stages an unset (the built-in CardForm semantics): the field shows the
 // base value, loses its override badge, and saving emits an unset op.
 face.resetField('maxTokensFloor')
-props = { t, useQwen38Card: (sel) => sel(face.hooks.qwen38Card.getSnapshot()) }
+props = { t, useQwen38Card: (sel) => sel(face.hooks.gatewayCard.getSnapshot()) }
 html = renderCard()
 assert.match(html, /maxTokensFloor" value="16384"/, 'reset shows the base value')
 assert.ok(/<button[^>]*>保存<\/button>/.test(html), 'reset stages a pending unset (save appears)')
 await face.save()
-assert.equal(face.hooks.qwen38Card.getSnapshot().open, false, 'a settled save collapses the card')
+assert.equal(face.hooks.gatewayCard.getSnapshot().open, false, 'a settled save collapses the card')
 const resetOps = norm(mutateCalls.at(-1).ops)
 assert.deepEqual(resetOps, [{ op: 'unset', path: ['maxTokensFloor'] }], 'reset save emits an unset op')
 // The fake scope applied the unset: only the chunkRatio override badge remains.
-props = { t, useQwen38Card: (sel) => sel(face.hooks.qwen38Card.getSnapshot()) }
+props = { t, useQwen38Card: (sel) => sel(face.hooks.gatewayCard.getSnapshot()) }
 html = renderCard()
 assert.equal((html.match(/已覆盖默认值/g) || []).length, 1, 'override badge count drops after unset')
 
 // discard drops all staged edits.
 face.edit('chunkRatio', '0.5')
 face.discard()
-props = { t, useQwen38Card: (sel) => sel(face.hooks.qwen38Card.getSnapshot()) }
+props = { t, useQwen38Card: (sel) => sel(face.hooks.gatewayCard.getSnapshot()) }
 html = renderCard()
 assert.ok(!/<button[^>]*>保存<\/button>/.test(html), 'no save button after discard')
 

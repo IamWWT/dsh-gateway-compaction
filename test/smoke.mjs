@@ -1,5 +1,5 @@
 /**
- * Gating smoke test for dsh-qwen38-gateway-compaction.
+ * Gating smoke test for dsh-gateway-compaction.
  *
  * Run from this directory (a `node_modules` symlink into a tree that provides
  * @deepseek-ai/schemastery + @deepseek-ai/dsh-settings must be resolvable —
@@ -230,7 +230,7 @@ console.log("settings wiring:");
   const listeners = {};
   ctxNew.on = (ev, fn) => { listeners[ev] = fn; };
   apply(ctxNew, { models: ["Qwen3.8-27B-GGUF"] });
-  check("new API: installSection called with the namespace", newApiCall?.ns, "qwen38-gateway-compaction");
+  check("new API: installSection called with the namespace", newApiCall?.ns, "gateway-compaction");
   check("new API: entry is schema-resolved (defaults filled)", [newApiCall?.entry?.effort, newApiCall?.entry?.maxTokensFloor, newApiCall?.entry?.chunking?.enabled], ["off", 16384, true]);
   // setSource from the settings scope must re-point the live policy: after
   // switching the allow-list away, a previously-allowed model passes through
@@ -292,7 +292,7 @@ console.log("manual compaction command:");
   apply(ctxCmd, {});
   check("command: inject declares the required services", injectCalls.some((d) => d.includes("commands") && d.includes("tokenMeter") && d.includes("sessions")), true);
   const names = registeredDefs.map((d) => d.name).sort();
-  check("command: both manual commands registered by default", JSON.stringify(names), JSON.stringify(["clear-context", "qwen38-compact"]));
+  check("command: both manual commands registered by default", JSON.stringify(names), JSON.stringify(["clear-context", "gateway-compact"]));
   for (const def of registeredDefs) {
     check(`command: ${def.name} handler is async`, typeof def.handler, "function");
   }
@@ -369,7 +369,7 @@ console.log("manual compaction command:");
     }
   };
   apply(ctxNewCtxOff, { command: { newContext: { enabled: false } } });
-  check("command: newContext disabled keeps only /qwen38-compact", registered?.name, "qwen38-compact");
+  check("command: newContext disabled keeps only /gateway-compact", registered?.name, "gateway-compact");
 }
 {
   // The hard-reset engine's summarizer is a template: it must not touch the
@@ -385,7 +385,7 @@ console.log("manual compaction command:");
   check("new-context: unmarked variant (no llmStreamCall)", !("llmStreamCall" in result) && typeof result.provider === "string" && typeof result.model === "string", true);
 }
 {
-  // command.enabled: false must suppress the /qwen38-compact registration
+  // command.enabled: false must suppress the /gateway-compact registration
   // (the hard-reset command is gated by its own flag and stays registered).
   const registeredDefsOff = [];
   const runEffectOff2 = (fn) => {

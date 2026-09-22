@@ -1,12 +1,12 @@
-# dsh-qwen38-gateway-compaction — bundle patch.
+# dsh-gateway-compaction — bundle patch.
 #
 # Registers the plugin on the host's `llm/stream` waterfall and installs its
 # process-local fetch wrapper. The config block below is the BASE layer:
-# a `qwen38-gateway-compaction:` section in $DSH_HOME/settings.yaml
+# a `gateway-compaction:` section in $DSH_HOME/settings.yaml
 # overrides it without a restart (see README.md).
 - insert:
-    - id: qwen38-gateway-compaction
-      name: dsh-qwen38-gateway-compaction
+    - id: gateway-compaction
+      name: dsh-gateway-compaction
       config:
         # Stamp this reasoning effort onto matched calls. "" disables the
         # effort policy (the wire-level layers still apply while configured).
@@ -75,7 +75,7 @@
           mergeMaxTokens: 16384
           # Safety cap on partial summaries per rescue; larger ranges fail open.
           maxChunks: 8
-        # Manual commands: type /qwen38-compact in any session to compact its
+        # Manual commands: type /gateway-compact in any session to compact its
         # history right now (model-summarized, keeps information), or
         # /clear-context for a hard reset (no LLM call, instant, history
         # discarded — environment state untouched). Both work even in agent

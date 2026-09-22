@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.3.0 (2026-09-19)
+
+### 改名：`dsh-qwen38-gateway-compaction` → `dsh-gateway-compaction`
+
+- 包名 / 插件 id / 设置命名空间 / 日志前缀 / GitHub 仓库统一改名：能力不止 Qwen3.8（压缩机制与模型无关），名字与能力对齐。
+- 手动命令 `/qwen38-compact` → **`/gateway-compact`**（功能不变：模型摘要压缩，大会话自动分片；`/clear-context` 不变）。改名原因：harness 已有内置 `/compact`（command-compact），新名字同时避免与其冲突。
+- **升级注意**：`settings.yaml` 中的配置段名 `qwen38-gateway-compaction:` 需手工改名为 `gateway-compaction:`（段内容不变），否则新插件按默认值运行、读不到旧配置。安装需先 `rm` 旧插件再 `add` 新路径（详见 README「安装」节）。
+- 设置页卡片标题改为「本地网关压缩与上下文管理」，描述文案补充适用模型说明（本地 Qwen3 系网关；其他模型把 id 加入 `models` 即可复用压缩机制）。
+- README（中/英）新增「适用模型」章节：默认 Qwen3.8-27B GGUF（llama.cpp / Unsloth / NInfer），Qwen3 相关 wire 字段说明，扩展到其他模型的方法与不适用场景。
+- 测试：全套 8 套断言同步新名字/新标题，全绿。
+
 ## 1.2.0 (2026-09-19)
 
 ### 自动压缩救援（无内置压缩引擎兜底，功能 6）

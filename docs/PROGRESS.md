@@ -1,4 +1,4 @@
-# dsh-qwen38-gateway-compaction — 进度档案
+# dsh-gateway-compaction — 进度档案
 
 > 本插件进度真源。开发/维护本插件的 agent 在每次需求/事故后更新本文件；
 > 工作区根 `progress.md` 只放指向本文件的索引链接，不写细节。
@@ -8,17 +8,26 @@
 Qwen3.8 本地网关（llama.cpp / NInfer）上的会话压缩修复插件：源码 link 安装于 3082 dev web
 （`~/.dsh-dev`），对「压缩摘要 / 会话标题」两类辅助调用做五层 fetch 拦截，
 并处理超大对话的分片 map-reduce 压缩救援 + 无内置引擎 preset 的自动溢出救援（Feature 6）。
-仓库：`dsh-plugins/dsh-qwen38-gateway-compaction/`。
+仓库：`dsh-plugins/dsh-gateway-compaction/`。
 
 ## 当前状态（2026-09-19 更新）
 
-- 版本 1.2.0（源码 link 安装，版本号仅簿记）。
+- 版本 1.3.0（源码 link 安装，版本号仅簿记）。
 - 全部测试绿：smoke(58) / window-resolution(10) / rescue-e2e(29) /
   integration-fetch(11) / preset-applicability(10) / client-smoke /
   prompt-sync(3) / auto-rescue(36)。
-- 3082 已装；host 端改动需 `systemctl --user restart dsh-dev-web` 生效（重启由用户执行）。
+- 3082 已装（profile 已切到新名 `dsh-gateway-compaction`）；host 端改动需 `systemctl --user restart dsh-dev-web` 生效（重启由用户执行）。
 
 ## 进行中 / 最近批次
+
+### 改名 dsh-gateway-compaction（2026-09-19，已上线待重启）
+
+- 仓库 / 包名 / 插件 id / 设置段 / GitHub 仓 / 本地目录：`dsh-qwen38-gateway-compaction` → `dsh-gateway-compaction`（1.3.0）。
+- 手动命令 `/qwen38-compact` → **`/gateway-compact`**（harness 已有内置 `/compact`，不可复用）；`/clear-context` 不变。
+- **settings.yaml 段名 `qwen38-gateway-compaction:` → `gateway-compaction:`（段内容不变）需用户手工改名**，否则新插件按默认值运行。
+- 3082 profile 已 rm 旧 + add 新（`~/.dsh-dev/profiles/web` 已指向新路径）。
+- 适用模型说明进 README 中英「适用模型」章节 + 设置页卡片描述。
+- 升级三步：rm 旧 → add 新（已完成）→ 用户改 settings.yaml 段名 + restart。
 
 ### 自动压缩救援（阶段二，已实现，待重启 + 验收）
 
@@ -58,7 +67,7 @@ Qwen3.8 本地网关（llama.cpp / NInfer）上的会话压缩修复插件：源
 - 待用户验证：
   - `systemctl --user restart dsh-dev-web` 后刷新 3082，设置页应见三段提示词 +
     「启用补充规则」开关（默认开）。
-  - 真实大会话跑 `/qwen38-compact` 验证分片压缩质量。
+  - 真实大会话跑 `/gateway-compact` 验证分片压缩质量。
 
 ### 遗留（未开工）
 
