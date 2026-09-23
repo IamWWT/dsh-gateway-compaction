@@ -385,16 +385,18 @@ const AutoCompactionConfig = z.object({
 /** Plugin config (all keys optional; defaults applied by the schema). */
 const Config = z.object({
   /** Reasoning effort stamped onto matched calls. `""` disables the effort policy. Default `"off"`. */
-  effort: z.string().default(DEFAULT_EFFORT),
+  // 0.1.7：设置页可写字段一律声明 .volatile()（settings 服务仅接受 volatile 路径；
+  // 写入落插件 entry 用户层，宿主经字段 getter 热读）。
+  effort: z.string().default(DEFAULT_EFFORT).volatile(),
   /** `purpose` tags of LLM calls the policy applies to. Default `["compaction"]`. */
-  purposes: z.array(z.string()).default(DEFAULT_PURPOSES),
+  purposes: z.array(z.string()).default(DEFAULT_PURPOSES).volatile(),
   /**
    * Exact model ids the policy applies to (case-sensitive, as declared in
    * settings.yaml). A call/body whose model is not in this list passes
    * through untouched. Empty list disables the policy entirely.
    * Default `["Qwen3.8-27B-GGUF"]`.
    */
-  models: z.array(z.string()).default(DEFAULT_MODELS),
+  models: z.array(z.string()).default(DEFAULT_MODELS).volatile(),
   /**
    * Exact model ids served by an **NInfer** gateway (case-sensitive, as
    * declared in settings.yaml). For these models the llama.cpp-specific
@@ -403,9 +405,9 @@ const Config = z.object({
    * only. Models in `models` but not here are treated as llama.cpp.
    * Default `[]`.
    */
-  ninModels: z.array(z.string()).default([]),
+  ninModels: z.array(z.string()).default([]).volatile(),
   /** Sampling settings applied to compaction request bodies; `{}` leaves sampling untouched. */
-  sampling: SamplingParams.default({}),
+  sampling: SamplingParams.default({}).volatile(),
   /**
    * `max_tokens` floor applied to compaction request bodies: the wire value
    * is raised to at least this number so the summarizer gets its output
@@ -414,21 +416,21 @@ const Config = z.object({
    * which overestimates dense conversations and can drive `max_tokens` to 1).
    * Never lowers the value. `0` or `null` disables the floor. Default 16384.
    */
-  maxTokensFloor: z.number().default(DEFAULT_MAX_TOKENS_FLOOR),
+  maxTokensFloor: z.number().default(DEFAULT_MAX_TOKENS_FLOOR).volatile(),
   /**
    * `reasoning_effort` wire value written into matched request bodies (layers
    * 2 and 4). llama.cpp maps it onto the Qwen3 chat template; `""` disables
    * this field write (the `chat_template_kwargs` gate still applies). Default
    * `"none"`.
    */
-  wireReasoning: z.string().default(DEFAULT_WIRE_REASONING),
+  wireReasoning: z.string().default(DEFAULT_WIRE_REASONING).volatile(),
   /**
    * When true, layers 2 and 4 merge `enable_thinking: false` into the body's
    * `chat_template_kwargs` (the Qwen3 template variable; other template
    * kwargs are preserved). When false, `chat_template_kwargs` is never
    * touched. Default `true`.
    */
-  enableThinkingOff: z.boolean().default(true),
+  enableThinkingOff: z.boolean().default(true).volatile(),
   /**
    * When true, the plugin appends its supplementary requirements
    * (`SUMMARY_SUPPLEMENT`) after the official dsh-compaction-basic main
@@ -440,16 +442,16 @@ const Config = z.object({
    * language output). When false, the official instruction is used
    * untouched. Default `true`.
    */
-  supplementOn: z.boolean().default(true),
+  supplementOn: z.boolean().default(true).volatile(),
   /** Oversized-compaction rescue policy (feature 2); see ChunkingConfig. */
-  chunking: ChunkingConfig.default({}),
+  chunking: ChunkingConfig.default({}).volatile(),
   /** Manual commands (`/gateway-compact`, `/clear-context`); see CommandConfig. */
-  command: CommandConfig.default({}),
+  command: CommandConfig.default({}).volatile(),
   /**
    * Automatic overflow/pressure rescue for presets without a built-in
    * compaction engine (feature 5); see AutoCompactionConfig.
    */
-  autoCompaction: AutoCompactionConfig.default({})
+  autoCompaction: AutoCompactionConfig.default({}).volatile()
 });
 
 /** Settings namespace carrying this plugin's policy (plain string; both dsh-settings generations validate the same kebab-case pattern). */
@@ -2328,21 +2330,58 @@ function apply(ctx, config = {}) {
   // When the settings service is mounted it replaces this source with its own
   // resolved scope (settings.yaml live overrides); when it is not, this is the
   // complete policy.
+  const CONFIG_FIELDS = ["effort","purposes","models","ninModels","sampling","maxTokensFloor","wireReasoning","enableThinkingOff","supplementOn","chunking","command","autoCompaction"];
+  const isLiveDoc = (c) => {
+    if (typeof c !== "object" || c === null) return false;
+    return CONFIG_FIELDS.some((k) => {
+      const f = c[k];
+      return typeof f === "object" && f !== null && typeof f.get === "function";
+    });
+  };
+  const unwrap = (v) => (v && typeof v === "object" && !Array.isArray(v) && typeof v.get === "function" ? (v.get ? v.get() : v) : v);
   let resolved = config;
-  try {
-    const r = Config["~standard"].validate(config);
-    if (r !== null && typeof r === "object" && "value" in r) resolved = r.value;
-  } catch {
-    /* malformed entry: keep the raw config; policyOf stays defensive */
+  if (isLiveDoc(config)) {
+    // 0.1.7：loader 已按插件 Config 校验过；字段是 volatile getter，保持活引用（热生效）。
+    resolved = config;
+  } else {
+    // 旧世界 / 单测：普通对象 —— 过 schema 补齐默认值（volatile 包装解开为值）。
+    try {
+      const r = Config["~standard"].validate(config);
+      if (r !== null && typeof r === "object" && "value" in r) {
+        const v = r.value;
+        const out = {};
+        for (const k of CONFIG_FIELDS) out[k] = unwrap(v?.[k]);
+        for (const k of Object.keys(v ?? {})) if (!(k in out)) out[k] = v[k];
+        resolved = out;
+      }
+    } catch {
+      /* malformed entry: keep the raw config; policyOf stays defensive */
+    }
   }
-  let current = () => resolved;
+  // 0.1.7 活读：插件行 volatile getter 每次调用重新取值（设置页写入热生效）；
+  // 旧世界（≤0.1.6）settings 服务经 setSource 钩子注入活值，仍优先。
+  const liveFromConfig = () => {
+    const out = {};
+    if (!isLiveDoc(config)) return out;
+    for (const key of CONFIG_FIELDS) out[key] = config[key].get();
+    return out;
+  };
+  let sectionSource = null;
+  const current = () => {
+    if (typeof sectionSource === "function") return sectionSource();
+    if (isLiveDoc(config)) return config;
+    const live = liveFromConfig();
+    if (Object.keys(live).length === 0) return resolved;
+    const merged = { ...resolved };
+    for (const [k, v] of Object.entries(live)) merged[k] = v;
+    return merged;
+  };
   const hooks = {
     setSource: (source) => {
-      current = source;
+      sectionSource = source;
     },
     onChange: () => {}
-  };
-  // New API (dsh-settings >= 0.1.3, e.g. source builds): the settings service
+  };  // New API (dsh-settings >= 0.1.3, e.g. source builds): the settings service
   // owns section installation; `ctx.inject` is optional — when no settings
   // service is mounted the callback never runs and the entry stays the source.
   let installed = false;

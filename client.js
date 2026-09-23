@@ -373,7 +373,7 @@ Merging rules:
 		// ------------------------------------------------------------------
 		class Qwen38CardController {
 			constructor(scope) {
-				this.scope = scope;
+				this.scope = scope || null;
 				// fieldId -> { text, clear } — mirrors the built-in CardForm staging model:
 				// a plain edit stages {text, clear:false}; resetField stages {text: baseValue,
 				// clear:true} so saving emits an unset op (the "overrides default" badge is
@@ -387,11 +387,11 @@ Merging rules:
 				// which card the user has open is a reading gesture, not persisted.
 				this.open = false;
 				this.store = createSnapshotStore(this.project());
-				scope.subscribe(() => this.publish());
+				if (this.scope) this.scope.subscribe(() => this.publish());
 			}
 
 			project() {
-				const snap = this.scope.getSnapshot();
+				const snap = this.scope ? this.scope.getSnapshot() : null;
 				const value = (snap && snap.value) || {};
 				const fields = {};
 				for (const f of ALL_FIELDS) {
@@ -482,7 +482,7 @@ Merging rules:
 			resetField(id) {
 				const f = FIELD_BY_ID[id];
 				if (!f) return;
-				const snap = this.scope.getSnapshot();
+				const snap = this.scope ? this.scope.getSnapshot() : null;
 				const base = getAt((snap && snap.base) || {}, f.path((snap && snap.value) || {}));
 				this.staged.set(id, { text: f.bool ? String(Boolean(base)) : f.format(base), clear: true });
 				this.failed = false;
@@ -497,7 +497,7 @@ Merging rules:
 			}
 
 			resetWindow(model) {
-				const snap = this.scope.getSnapshot();
+				const snap = this.scope ? this.scope.getSnapshot() : null;
 				const base = getAt((snap && snap.base) || {}, ['chunking', 'contextWindows', model]);
 				this.stagedWindows.set(model, { text: typeof base === 'number' ? String(base) : '', clear: true });
 				this.failed = false;
@@ -512,7 +512,7 @@ Merging rules:
 			}
 
 			async save() {
-				const snap = this.scope.getSnapshot();
+				const snap = this.scope ? this.scope.getSnapshot() : null;
 				if (!snap || !snap.writable || this.saving) return;
 				const value = snap.value || {};
 				const ops = [];
@@ -537,7 +537,7 @@ Merging rules:
 				this.failed = false;
 				this.publish();
 				try {
-					await this.scope.mutate(ops, snap.revision);
+					if (this.scope) await this.scope.mutate(ops, snap.revision); else this.failed = true;
 					// Same gesture as the built-in cards: collapse once the write settled.
 					this.open = false;
 					this.staged.clear();
@@ -844,7 +844,7 @@ Merging rules:
 		// Cordis client plugin surface.
 		// ------------------------------------------------------------------
 		exports.name = NS;
-		exports.inject = ['slots', 'locale', 'settingsScope'];
+		exports.inject = ['slots', 'locale', 'configForms'];
 
 		/**
 		 * Register the locale dictionaries and the settings views.
@@ -853,7 +853,14 @@ Merging rules:
 		exports.apply = function apply(ctx) {
 			ctx.effect(() => ctx.locale.register(NS, LOCALES), NS + ': client dictionaries');
 			const t = typeof ctx.locale?.bind === 'function' ? ctx.locale.bind(NS) : (key) => String(key);
-			const controller = new Qwen38CardController(ctx.settingsScope.bind({ namespace: NS }));
+			// 0.1.7 原生设置面：configForms（@deepseek-ai/dsh-client-ui-settings 提供）；
+			// 旧版 settings binder 服务已随 0.1.7 移除。服务缺失时 scope=null，卡片降级只读。
+			let scope = null;
+			try {
+				const forms = typeof ctx.get === 'function' ? ctx.get('configForms') : (ctx.configForms ?? null);
+				if (forms && typeof forms.get === 'function') scope = forms.get(NS) ?? null;
+			} catch { scope = null; }
+			const controller = new Qwen38CardController(scope);
 			// Legacy home (still hosted by the settings page): Settings → 插件 →
 			// 插件配置 card, matching every built-in plugin (no extra left-nav
 			// entry). On dsh builds without that page the registration is simply

@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.3.1 (2026-09-24)
+
+0.1.7 原生适配（harness 0.1.6→0.1.7 升级）：
+
+- **host**：插件行 `Config` 顶层字段全部声明 `.volatile()`（0.1.7 settings 服务
+  仅接受 volatile 路径）；`apply()` 对 0.1.7 loader 传入的 volatile getter 文档保持
+  活引用（每次 LLM 调用前重读，设置页写入热生效），普通对象（≤0.1.6/单测）仍走
+  schema 校验补默认值并解开 volatile 包装；旧 dsh-settings 两代 API 的兼容分支保留
+  （0.1.7 下自然空转）。
+- **client**：`settingsScope` 服务已随 0.1.7 移除 → 改经 `ctx.configForms`
+  （`@deepseek-ai/dsh-client-ui-settings` 提供，`get('gateway-compaction')` 即本插件
+  entry）；`ConfigForm` 面（getSnapshot/subscribe/mutate）与旧 binder scope 同形，
+  控制器加 null 守卫（服务缺失时卡片降级只读）。
+- 全部测试通过：smoke 58 / client-smoke / auto-rescue / window-resolution / prompt-sync。
+
 ## 1.3.0 (2026-09-19)
 
 ### 改名：`dsh-qwen38-gateway-compaction` → `dsh-gateway-compaction`

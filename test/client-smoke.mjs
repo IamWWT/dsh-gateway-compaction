@@ -115,9 +115,9 @@ const fakeCtx = {
     register: (ns, dict) => { localeRegisters.push({ ns, dict }) },
     bind: () => (key) => key,
   },
-  settingsScope: {
-    bind: (spec) => {
-      assert.equal(spec.namespace, 'gateway-compaction')
+  configForms: {
+    get: (ns) => {
+      assert.equal(ns, 'gateway-compaction')
       return fakeScope
     },
   },
@@ -149,7 +149,7 @@ const plugin = loaded[0].factory((specifier) => {
 })
 
 assert.equal(plugin.name, 'gateway-compaction')
-assert.deepEqual([...plugin.inject].sort(), ['locale', 'settingsScope', 'slots'])
+assert.deepEqual([...plugin.inject].sort(), ['configForms', 'locale', 'slots'])
 
 // ---------------------------------------------------------------------------
 // apply(): locale + slot registration.
