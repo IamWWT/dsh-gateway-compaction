@@ -7,10 +7,11 @@
  * Run: node test/client-smoke.mjs
  */
 import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
 import assert from 'node:assert/strict'
 
-const ROOT = new URL('..', import.meta.url).pathname
+const ROOT = fileURLToPath(new URL('..', import.meta.url))
 
 // ---------------------------------------------------------------------------
 // Minimal React stand-in (createElement + one-shot function-component render).
@@ -364,7 +365,7 @@ if (existsSync(summarizerPath)) {
   const m = harness.match(/const COMPACTION_INSTRUCTION = \[([\s\S]*?)\]\.join/)
   assert.ok(m, 'harness exposes COMPACTION_INSTRUCTION')
   const harnessText = eval(`(function () { const SUMMARY_OPEN_TAG = '<compacted-summary>'; return [${m[1]}].join('\\n'); })()`)
-  const clientSrc = readFileSync(new URL('../client.js', import.meta.url), 'utf8')
+  const clientSrc = readFileSync(new URL('../client.js', import.meta.url), 'utf8').replace(/\r\n?/g, '\n')
   const cm = clientSrc.match(/const MAIN_PROMPT_TEXT = `([\s\S]*?)`;/)
   assert.ok(cm, 'client.js embeds MAIN_PROMPT_TEXT')
   assert.equal(cm[1], harnessText, 'displayed main prompt is an exact copy of the harness instruction')

@@ -250,7 +250,7 @@ contextWindow - maxOutputTokens - ceil(contextWindow × safetyMarginRatio) > 0
 
 ```sh
 dsh-dev plugin --profile web add \
-  /home/wwt/Downloads/aigc/proj/deepseek/dsh-plugins/dsh-gateway-compaction
+  ${DEEPSEEK_ROOT}/dsh-plugins/dsh-gateway-compaction
 ```
 
 > 从旧名 `dsh-qwen38-gateway-compaction` 升级：先 `rm` 旧插件再 `add` 新路径（见上），并把 `$DSH_HOME/settings.yaml` 里的 `qwen38-gateway-compaction:` 段名改成 `gateway-compaction:`（段内容不变），否则新插件按默认值运行、读不到旧配置。
@@ -309,3 +309,8 @@ node test/prompt-sync.mjs
 ## License
 
 MIT，见 [`LICENSE`](./LICENSE)。
+<!-- deepseek-shared-layout -->
+
+## Windows / Ubuntu 共用目录
+
+本项目遵循 [DeepSeek 共用目录约定](../dsh-agent-presets/docs/DIRECTORY-LAYOUT.md)。管理根统一写作 `<DEEPSEEK_ROOT>`（`.../deepseek/`），历史部署记录不能视为当前机器状态；Bash/systemd 命令只适用于对应环境，配置文件中的路径须在本机解析。

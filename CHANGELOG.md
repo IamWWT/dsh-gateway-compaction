@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- 修复 `client-smoke.mjs` 在 Windows 上把文件 URL 误作路径、导致盘符重复的问题；使用 `fileURLToPath` 转换后可跨平台运行。
+- 提示词源码校验按 JavaScript 模板字符串的运行时规则处理 CRLF，避免 Windows checkout 产生误报。
+
 ## 1.3.1 (2026-09-24)
 
 0.1.7 原生适配（harness 0.1.6→0.1.7 升级）：

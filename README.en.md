@@ -252,7 +252,7 @@ contextWindow - maxOutputTokens - ceil(contextWindow × safetyMarginRatio) > 0
 
 ```sh
 dsh-dev plugin --profile web add \
-  /home/wwt/Downloads/aigc/proj/deepseek/dsh-plugins/dsh-gateway-compaction
+  ${DEEPSEEK_ROOT}/dsh-plugins/dsh-gateway-compaction
 ```
 
 > Upgrading from the old name `dsh-qwen38-gateway-compaction`: remove the old plugin, `add` the new path (above), and rename the `qwen38-gateway-compaction:` section in `$DSH_HOME/settings.yaml` to `gateway-compaction:` (the section body is unchanged). Without this the new plugin runs on defaults and ignores your old settings.

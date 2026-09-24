@@ -24,7 +24,8 @@ const here = dirname(fileURLToPath(import.meta.url))
 
 const { SUMMARY_SUPPLEMENT, MERGE_PREAMBLE } = await import("../index.js")
 
-const clientSrc = readFileSync(join(here, "..", "client.js"), "utf8")
+// JavaScript template literals normalize source line endings at runtime.
+const clientSrc = readFileSync(join(here, "..", "client.js"), "utf8").replace(/\r\n?/g, "\n")
 
 function extractTemplate(name) {
   const marker = `const ${name} = \``
