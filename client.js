@@ -553,7 +553,11 @@ Merging rules:
 			/** The face the slot entry injects into the card component. */
 			inject() {
 				return {
-					hooks: { gatewayCard: this.store },
+					// 槽位渲染器把 `hooks` 格的每个键绑定成组件侧的 `use<Key>`——
+					// 键 `qwen38Card` → 组件里 `props.useQwen38Card(...)`。
+					// 键名必须与调用点一致，否则组件拿到 undefined 直接抛
+					// `props.useXxx is not a function`（槽位条目崩溃、表单空白）。
+					hooks: { qwen38Card: this.store },
 					edit: (id, text) => this.edit(id, text),
 					resetField: (id) => this.resetField(id),
 					editWindow: (model, text) => this.editWindow(model, text),
@@ -861,20 +865,13 @@ Merging rules:
 				if (forms && typeof forms.get === 'function') scope = forms.get(NS) ?? null;
 			} catch { scope = null; }
 			const controller = new Qwen38CardController(scope);
-			// Legacy home (still hosted by the settings page): Settings → 插件 →
-			// 插件配置 card, matching every built-in plugin (no extra left-nav
-			// entry). On dsh builds without that page the registration is simply
-			// never rendered.
-			ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
-				name: 'settings.plugin.item',
-				key: NS,
-				locale: NS,
-				inject: () => controller.inject(),
-			}, Card));
-			// dsh ≥ 0.1.6 home: the bundle's page in the sidebar 插件 panel
-			// (ui-plugin-manager) renders this entry — keyed by this package's
-			// name — as the bundle's own configuration section. On dsh builds
-			// that ship no Plugins page the entry is simply never rendered.
+			// 插件页该 bundle 的配置区：`plugins.bundle.config`（keyed；**key 必须是包名**，
+			// 上游按 `ledger.bundles.has(pkg.name)` 决定是否渲染该区块）。
+			// 注：旧槽 `settings.plugin.item` 已被上游 0.1.7-rc.1（commit 90af3110b7，
+			// 2026-09-16）**退役**，取代它的是 `plugins.item`（官方设置页专用）/
+			// `plugins.bundle.config`（bundle 表单）/ `plugins.row.config`（单个 row）。
+			// 注册到退役槽位不报错——`slots.inject` 只等声明，等不到即永不触发——
+			// 故此处不再保留指向退役槽位的注册（它只会白等，永不渲染）。
 			ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
 				name: 'plugins.bundle.config',
 				key: 'dsh-gateway-compaction',
