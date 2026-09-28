@@ -1,5 +1,19 @@
 # 迁移史：llama.cpp 专用压缩插件 → 网关通用版（2026-09-09）
 
+## 当前状态
+
+| 项 | 值 |
+|---|---|
+| 文档性质 | **历史记录**（一次性迁移的归档，非操作手册） |
+| 对应版本 | 迁移发生于 1.0.x；后续沿革见 [PROGRESS.md](./PROGRESS.md)（当前 1.3.1） |
+| 状态 | 迁移已完成并长期运行；文中「后续注意」为现行约定 |
+| 维护者 | 本插件开发者（monorepo `dsh-plugins/dsh-gateway-compaction/`） |
+
+> 全文为 2026-09-09 当时的事实快照。**两处与现状不同，阅读时以现状为准**：
+> ①安装方式已由源码 link 统一改为 tgz（2026-09-23 起）；②当时的 GitHub 独立仓
+> （`dsh-qwen38-gateway-compaction`）已于 2026-09-26 删除，当前代码准绳是 monorepo
+> `IamWWT/dsh-plugins`（private），public 独立仓 `IamWWT/dsh-gateway-compaction` 双轨同步。
+
 > 本文档归档自工作区一次性迁移工具目录 `compaction-fix-apply/`（README + apply.sh +
 > transform.py + 迁移前备份快照，2026-09-12 已从工作区根目录删除）。该目录不是插件，
 > 也从未是任何服务的运行时依赖；本文件是其全部长期价值的沉淀。
@@ -33,7 +47,7 @@ settings.yaml 里把它的 `models` 覆盖成了 `qwen3.8-27b`（NInfer 的模�
   3. 新插件配置段不手写——`dsh plugin add` 后由本插件 `cordis.patch.yml`
      基础层提供 `models/ninModels/contextWindows` 全部默认值。
 - **插件替换**：`dsh plugin --profile web remove` 旧插件 →
-  `dsh plugin --profile web add` 本插件（源码 link 安装）。
+  `dsh plugin --profile web add` 本插件（当时为源码 link 安装；2026-09-23 起统一改为 tgz 安装）。
 - **pnpm 放行**：profile 的 `pnpm-workspace.yaml` 补 `minimumReleaseAge: 0`，
   绕过 supply-chain 冷却期对 `dsh plugin` 内部 `pnpm install` 的拦截（仅本 profile）。
 
@@ -50,4 +64,6 @@ settings.yaml 里把它的 `models` 覆盖成了 `qwen3.8-27b`（NInfer 的模�
   指向已不存在的目录）。2026-09-12 已清除；若再出现同名牌软链，确认其不在
   `dsh.profile.bundles` 与 `package.json` 依赖里后可直接删除。
 - GitHub 仓库改名：`dsh-qwen38-llamacpp-compaction-fix` →
-  `dsh-qwen38-gateway-compaction`（GitHub 自动 301 旧地址）。
+  `dsh-qwen38-gateway-compaction`（GitHub 自动 301 旧地址）。该独立仓已于 2026-09-26
+  随其余私有独立仓一并删除；当前代码准绳是 monorepo `IamWWT/dsh-plugins`（private），
+  public 独立仓 `IamWWT/dsh-gateway-compaction` 双轨同步更新。

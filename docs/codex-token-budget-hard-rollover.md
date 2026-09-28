@@ -1,69 +1,69 @@
-# Codex token budget + 硬上下文切换 对本插件的启示(修订版)
+# Codex token budget + 硬上下文切换：对本插件的启示
 
-> 状态:调研修订版(2026-09-11),替代早期「token budget 提示做不了」的表述。
-> 结论先行:Codex 的 token-budget compaction 是**默认关闭、账户后端限定**的客户端/
-> 后端协同实验能力,不是任意 OpenAI-compatible API 能单独开启的通用参数。
-> 对本插件(本地 llama.cpp + NInfer + Qwen3.8-27B + dsh),**预算编排与生命周期可在
-> 插件侧完成;精确记账与容量数据仍需服务端/API 提供**。
+## 当前状态
 
-## 1. Codex 在做什么(已核实事实)
+| 项 | 值 |
+|---|---|
+| 文档性质 | **研究**（外部能力调研 + 本插件取舍结论） |
+| 对应版本 | 结论对齐 **1.3.1**（调研原文 2026-09-11，2026-09-19 复核） |
+| 状态 | 结论仍有效；「已落地 / 可做近似 / 明确不做」三档已按终态归档（见 §2） |
+| 维护者 | 本插件开发者 |
+
+**结论先行**：Codex 的 token-budget compaction 是**默认关闭、账户后端限定**的客户端/后端
+协同实验能力，不是任意 OpenAI-compatible API 能单独开启的通用参数。对本插件（本地
+llama.cpp + NInfer + Qwen3.8-27B + dsh），**预算编排与生命周期可在插件侧完成；精确记账与
+容量数据仍需服务端/API 提供**。
+
+## 1. 对本插件的终态结论
+
+### 1.1 已落地（1.3.x 现状）
+
+| 能力 | 形态 | 与 Codex 的差距 |
+|---|---|---|
+| 显式硬重置（断片） | `/clear-context`，**零 LLM 调用**，复用官方 `dsh-compaction-basic` 事务、摘要器换固定模板 | 语义与 `new_context`（不总结、丢可见历史、环境不变）一致；**但它是用户手动命令，不是模型可调用工具** |
+| 超大对话分片救援 | 已实现（与本主题独立，保证小窗口模型压缩仍可用） | — |
+| 上下文预算自动管理（原「minimal 80% 预警 / 98% 自动压缩」设计） | 已实现（1.3.0 起泛化到所有无内置引擎 preset）= 功能 6「自动压缩救援」 | `thresholdRatio × 窗口`（窗口显式配置 167236 时数值上等于 80% 可用预算预警）压力预警 + 98% 区间由「400 溢出 → 压缩 → 重试」覆盖。见 [minimal-context-budget.md](./minimal-context-budget.md) |
+| 近似预算提醒 | `agent.inject()` 注入 user 角色上下文 + 本地估算；有 `agent/pre-step` 钩子 | **无服务端预算记账、无每轮自动注入钩子**——只能「本地估算 + 显式注入」，不等价于 Codex `get_context_remaining` 的宿主记账；且注入须满足 dsh「Model-visible ⟺ logged」约束 |
+| 历史检索 / 交接 note | 插件命令读 `session.v2.jsonl`（append-only，压缩只改 surface）+ 工作区文件 | 是产品层替代；事件日志是原始档案，**不是** Codex `history.*`/`notes.*` 那种带后端检索、可跨窗口取回的模型工具 |
+
+### 1.2 需模型/API（或宿主）支持，插件做不了
+
+- **服务端 token-budget 记账与 context-window lineage**（响应元数据携带窗口/条目 ID，
+  讨论见 [discussion #42703](https://github.com/openai/codex/discussions/42703)）——本地
+  llama.cpp/NInfer 网关无此概念；
+- `get_context_remaining` 式「模型主动查询真实剩余预算」工具——宿主无
+  `base_window_tokens_remaining` 记账；
+- `new_context` 作为**模型可调用工具**（而非用户命令）；
+- `history.*` / `notes.*` 的跨窗口检索后端（旧窗口全文搜索、笔记持久化服务）；
+- 每轮自动注入「剩余预算」——dsh 无该自动钩子；`agent.inject()` 需显式触发且一次只排队到
+  最近一个 `pre-step`；
+- 精确 tokenizer 计数、真实上下文窗口 / 最大输出限制、输入输出与 cache usage、
+  KV/prefix cache 复用——需服务端能力。
+
+### 1.3 落地优先级（终态）
+
+1. **已落地**：`/clear-context`（硬重置）、分片救援、请求体改写。
+2. **已落地（1.3.0）**：80% 预警压缩 + 98% 区间「400 溢出 → 压缩 → 重试」（功能 6）。
+   服务端硬限制对齐 `378144 − 192000 − 18908 = 167236` 输入上限。
+3. **可选增强（标注启发式/有损，未开工）**：handoff-note——硬重置前只让模型基于最近一小段
+   surface 写交接 note，一次廉价调用。
+4. **明确不做（第一版）**：把「剩余预算」注入每次普通对话请求——会改变模型可见上下文且破坏
+   Model-visible ⟺ logged 一致性，收益不稳定。
+
+## 2. Codex 在做什么（已核实事实）
 
 | 事实 | 证据 | 判定 |
 |---|---|---|
-| `Feature::TokenBudget` 下,compaction 语义改为「新开 context window」:不请求服务端摘要,不把旧 user/assistant 消息带入下一请求 | [PR #29743](https://github.com/openai/codex/pull/29743)(merged 2026-06-23,body 描述原文)+ [compact_token_budget.rs](https://github.com/openai/codex/blob/main/codex-rs/core/src/compact_token_budget.rs)("skips model/server summarization and installs a fresh context window") | 已证实 |
-| 该操作仍走 compaction 生命周期,compaction hook 与 `ContextCompaction` turn item 照常触发 | 同上 PR body 与源码 | 已证实 |
-| `new_context` 是注册给模型的**客户端工具**,语义:「开始新窗口;不清除、不重置、不影响环境状态」 | [new_context_window_spec.rs](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/handlers/new_context_window_spec.rs) | 已证实(host 侧能力,非模型 API 参数) |
-| `get_context_remaining` 模型工具存在,返回宿主记账的剩余 token | [get_context_remaining.rs](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/handlers/get_context_remaining.rs)(读 `base_window_tokens_remaining`) | 已证实;是「模型主动查询」的工具,不是每轮自动注入 |
-| `history` / `notes` 工具(列窗口/条目、读、搜索;笔记追加/写)于 2026-08-21 合并 | [PR #39827](https://github.com/openai/codex/pull/39827) | 已证实;启用受 OpenAI provider + Codex backend 认证限定 |
-| rust-v0.153.0(2026-09-03 发布)新增**默认关闭**的 `features.context_management.experimental_mode`;仅符合条件的 ChatGPT Plus/Pro/Pro Lite + Codex backend 会话获得 token-budget context、history notes、`new_context`;**API key 会话、自定义 provider、临时 structured threads 明确排除** | [release rust-v0.153.0](https://github.com/openai/codex/releases/tag/rust-v0.153.0) 正文(引用 PR #42385) | 已证实,逐字 |
-| 动机:重复 compaction 使长任务「执行前沿」退化 | [issue #34095](https://github.com/openai/codex/issues/34095) | 用户报告观察(24 次 `compacted` 事件后收敛性下降);issue 正文自称「未证实 Ultra 单独致因」——**不能写为官方已确认根因** |
-| atomic handoff 原语 | [issue #33310](https://github.com/openai/codex/issues/33310) | **开放 enhancement 提案** + 下游原型,非已实现能力 |
+| `Feature::TokenBudget` 下 compaction 语义改为「新开 context window」：不请求服务端摘要，不把旧 user/assistant 消息带入下一请求 | [PR #29743](https://github.com/openai/codex/pull/29743)（merged 2026-06-23，body 描述原文）+ [compact_token_budget.rs](https://github.com/openai/codex/blob/main/codex-rs/core/src/compact_token_budget.rs)（"skips model/server summarization and installs a fresh context window"） | 已证实 |
+| 该操作仍走 compaction 生命周期，compaction hook 与 `ContextCompaction` turn item 照常触发 | 同上 PR body 与源码 | 已证实 |
+| `new_context` 是注册给模型的**客户端工具**，语义「开始新窗口；不清除、不重置、不影响环境状态」 | [new_context_window_spec.rs](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/handlers/new_context_window_spec.rs) | 已证实（host 侧能力，非模型 API 参数） |
+| `get_context_remaining` 模型工具存在，返回宿主记账的剩余 token | [get_context_remaining.rs](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/handlers/get_context_remaining.rs)（读 `base_window_tokens_remaining`） | 已证实；是「模型主动查询」工具，不是每轮自动注入 |
+| `history` / `notes` 工具（列窗口/条目、读、搜索；笔记追加/写）于 2026-08-21 合并 | [PR #39827](https://github.com/openai/codex/pull/39827) | 已证实；启用受 OpenAI provider + Codex backend 认证限定 |
+| rust-v0.153.0（2026-09-03）新增**默认关闭**的 `features.context_management.experimental_mode`；仅符合条件的 ChatGPT Plus/Pro/Pro Lite + Codex backend 会话获得 token-budget context、history notes、`new_context`；**API key 会话、自定义 provider、临时 structured threads 明确排除** | [release rust-v0.153.0](https://github.com/openai/codex/releases/tag/rust-v0.153.0) 正文（引用 PR #42385） | 已证实，逐字 |
+| 动机：重复 compaction 使长任务「执行前沿」退化 | [issue #34095](https://github.com/openai/codex/issues/34095) | 用户报告观察（24 次 `compacted` 事件后收敛性下降）；issue 正文自称「未证实 Ultra 单独致因」——**不能写为官方已确认根因** |
+| atomic handoff 原语 | [issue #33310](https://github.com/openai/codex/issues/33310) | **开放 enhancement 提案** + 下游原型，非已实现能力 |
 
-下载/部署斜杠:`rust-v0.153.0` 是 openai/codex 的发布标签;上表 URL 以仓库现状为准。
-
-## 2. 插件侧可做 vs 需模型/API 支持
-
-### 2.1 插件侧已实现/可近似
-
-| 能力 | 形态 | 说明与差距 |
-|---|---|---|
-| 显式硬重置(断片) | `/clear-context`(**已实现**,零 LLM 调用) | 复用官方 `dsh-compaction-basic` 事务,摘要器换固定模板;与 `new_context`「不总结、丢可见历史、环境不变」语义一致;**但是用户手动命令,不是模型可调用工具** |
-| 超大对话分片救援 | 已实现 | 与本文主题独立,保证小窗口模型压缩仍可用 |
-| 上下文预算自动管理（原「minimal 80% 预警 / 98% 自动压缩」设计） | 已实现（1.3.0 起，泛化到所有无内置引擎 preset） | 落地为「自动压缩救援」（功能 6）：`thresholdRatio × 窗口`（窗口显式配置为 167236 时数值上等于 80% 可用预算预警）压力预警压缩 + 98% 区间由「400 溢出 → 压缩 → 重试」覆盖；适用面从 minimal 扩到所有未挂内置压缩引擎的 preset。见 README 功能 6 与 [`minimal-context-budget.md`](./minimal-context-budget.md) |
-| 近似预算提醒 | `agent.inject()` 注入 user 角色上下文 + 本地估算 | dsh 有 `agent.inject(message)` 与 `agent/pre-step`;但**无服务器端预算记账、无每轮自动注入钩子**——只能「本地估算 + 显式注入」的近似,不等价于 Codex `get_context_remaining` 的宿主记账;且注入必须满足 dsh「Model-visible ⟺ logged」约束(需对应 session 事件) |
-| 历史检索 / 交接 note | 插件命令读 `session.v2.jsonl`(append-only,压缩只改 surface)+ 工作区文件 | 产品层替代;事件日志是原始档案,**不是** Codex `history.*` / `notes.*` 这种带后端检索、可跨窗口取回的模型工具 |
-
-### 2.2 需模型/API(或宿主)支持,插件做不了
-
-- **服务端 token-budget 记账与 context-window lineage**(响应元数据携带窗口/条目 ID,讨论见 [discussion #42703](https://github.com/openai/codex/discussions/42703))——本地 llama.cpp/NInfer 网关无此概念;
-- `get_context_remaining` 式「模型主动查询真实剩余预算」工具——宿主无 `base_window_tokens_remaining` 记账;
-- `new_context` 作为**模型可调用工具**(而非用户命令);
-- `history.*` / `notes.*` 的跨窗口检索后端(旧窗口全文搜索、笔记持久化服务);
-- 每轮自动注入「剩余预算」——dsh 无该自动钩子;`agent.inject()` 需显式触发且一次只排队到最近一个 pre-step;
-- 精确 tokenizer 计数、真实上下文窗口 / 最大输出限制、输入输出与 cache usage、KV/prefix cache 复用——需服务端能力。
-
-## 3. 早期文档需修正的表述
-
-| 原文(2026-09-05 版) | 修正 |
-|---|---|
-| 「dsh 没有给插件的 per-request 上下文注入钩子,做不了(除非改 dsh 本体)」 | 不准确:dsh 有 `agent.inject()` 与 `agent/pre-step`。准确表述:**无服务器端预算记账、无每轮自动注入钩子;可做「本地估算 + 显式注入」的近似,非 Codex 记账** |
-| 「`history.*` 的等价物其实已经存在(session.v2.jsonl 可查)」 | 过度断言:append-only 事件日志 ≠ 带后端检索/跨窗口取回的 `history.*` 模型工具;只能作为产品层替代/命令入口 |
-| 「token budget 感知注入……做不了」 | 降级为「近似可做,不等价」 |
-| 「24 次 compaction 后收敛性下降」作为已确认根因 | 降级为「用户报告观察,非已证实根因」 |
-| history/notes「解决硬重置后怎么找回状态」作为通用事实 | 注明启用限定(OpenAI provider + Codex backend + feature 开关) |
-
-## 4. 对本插件的落地优先级
-
-1. **已落地**:`/clear-context`(硬重置)、分片救援、请求体改写。
-2. **已落地**(1.3.0):80% 预警压缩 + 98% 区间「400 溢出 → 压缩 → 重试」,即功能 6
-   「自动压缩救援」(原 minimal 专用设计已泛化到所有无内置引擎 preset;服务端硬限制
-   对齐:`378144 − 192000 − 18908 = 167236` 输入上限,见 `minimal-context-budget.md`)。
-3. **可选增强(标注启发式/有损)**:handoff-note(硬重置前只让模型基于最近一小段
-   surface 写交接 note,一次廉价调用)。
-4. **明确不做(第一版)**:把「剩余预算」注入每次普通对话请求——会改变模型可见上下文
-   且破坏 Model-visible ⟺ logged 一致性,收益不稳定。
-
-## 5. 参考链接
+## 3. 参考链接
 
 - [PR #29743 — reset context for token budget compaction](https://github.com/openai/codex/pull/29743)
 - [compact_token_budget.rs](https://github.com/openai/codex/blob/main/codex-rs/core/src/compact_token_budget.rs)
@@ -75,6 +75,19 @@
 - [issue #33310 — atomic handoff primitive (proposal)](https://github.com/openai/codex/issues/33310)
 - [discussion #42703 — history retrieval 跨窗口语义](https://github.com/openai/codex/discussions/42703)
 
-dsh 侧依据(仓库源码,公开 API 属 pre-stable,按版本核实):
-`deepseek-harness/packages/core/agent/src/runtime-types.ts`(`agent.inject` /
-`agent/session-start` / `agent/pre-step` / `agent/request`)。
+dsh 侧依据（仓库源码，公开 API 属 pre-stable，按版本核实）：
+`deepseek-harness/packages/core/agent/src/runtime-types.ts`（`agent.inject` /
+`agent/session-start` / `agent/pre-step` / `agent/request`）。
+
+## 4. 历史沿革
+
+- 2026-09-05 初版结论偏保守，写了「dsh 没有给插件的 per-request 上下文注入钩子，做不了
+  （除非改 dsh 本体）」——**不准确**：dsh 有 `agent.inject()` 与 `agent/pre-step`；
+  准确表述是「无服务端预算记账、无每轮自动注入钩子，可做本地估算 + 显式注入的近似」。
+- 同期写「`history.*` 的等价物其实已经存在（session.v2.jsonl 可查）」——**过度断言**：
+  append-only 事件日志 ≠ 带后端检索/跨窗口取回的 `history.*`，只能作产品层替代。
+- 「token budget 感知注入做不了」→ 降级为「近似可做，不等价」。
+- 「24 次 compaction 后收敛性下降」由「已确认根因」→ 降级为「用户报告观察」。
+- history/notes「解决硬重置后怎么找回状态」由通用事实 → 补注启用限定（OpenAI provider +
+  Codex backend + feature 开关）。
+- 2026-09-11 修订版替代上述表述；2026-09-19 按 1.3.0 终态复核，落地情况见 §1.3。

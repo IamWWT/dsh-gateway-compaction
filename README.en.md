@@ -4,6 +4,15 @@
 
 GitHub renders the Chinese [`README.md`](./README.md) by default. This English file is `README.en.md`.
 
+## Environment support matrix
+
+| Environment | Support | Notes |
+|---|---|---|
+| `ubuntu-4090` (local workstation) | **Full** | Local llama.cpp / NInfer gateways runnable; compaction, chunked rescue, automatic rescue, and manual commands all available |
+| `windows-lite` (remote laptop) | **Degraded** | Weak discrete GPU — LLM gateways cannot run locally, so there is **no local gateway**. Pointed at a remote OpenAI-compatible endpoint the compaction machinery works (including the zero-LLM `/clear-context` hard reset); with no usable endpoint the plugin still installs and loads without crashing, and the model policy simply does not apply |
+
+Environment differences are expressed through config keys (`models` / `ninModels` / `chunking.contextWindows`); the plugin contains no OS-detection branches. The full convention lives in [`../docs/ENV-COMPATIBILITY.md`](../docs/ENV-COMPATIBILITY.md) §3. Service commands (`systemctl --user …`) apply to `ubuntu-4090` only; `windows-lite` runs a source tree launched manually via `dsh-dev`.
+
 ## Applicable models
 
 This plugin targets **local Qwen3.8 gateways** (served by llama.cpp / Unsloth Studio or an NInfer gateway) by default:
@@ -185,7 +194,7 @@ gateway-compaction:
 
 ## Configuration
 
-Settings file: `$DSH_HOME/settings.yaml`; for the dev profile, usually `~/.dsh-dev/settings.yaml`.
+Settings file: `$DSH_HOME/settings.yaml`; for the dev profile, usually `~/.dsh-dev/settings.yaml` (same layout on `ubuntu-4090` and `windows-lite`).
 
 ```yaml
 gateway-compaction:
@@ -210,7 +219,7 @@ gateway-compaction:
     mergeMaxTokens: 16384
     maxChunks: 8
 
-  # Design placeholder (not implemented): the minimal-only budget policy.
+  # Design placeholder (not consumed by code): the minimal-only budget policy.
   # The actual fallback is provided by autoCompaction below (Feature 6).
   minimalContext:
     enabled: true
@@ -250,18 +259,25 @@ contextWindow - maxOutputTokens - ceil(contextWindow × safetyMarginRatio) > 0
 
 ## Installation
 
+Always a tgz install (there is no source-link mode). Pack inside the plugin directory, then add the tarball to the profile:
+
 ```sh
-dsh-dev plugin --profile web add \
-  ${DEEPSEEK_ROOT}/dsh-plugins/dsh-gateway-compaction
+cd ${DEEPSEEK_ROOT}/dsh-plugins/dsh-gateway-compaction
+pnpm check && npm pack          # produces dsh-gateway-compaction-<version>.tgz
+dsh-dev plugin --profile web add $(pwd)/dsh-gateway-compaction-<version>.tgz
 ```
 
-> Upgrading from the old name `dsh-qwen38-gateway-compaction`: remove the old plugin, `add` the new path (above), and rename the `qwen38-gateway-compaction:` section in `$DSH_HOME/settings.yaml` to `gateway-compaction:` (the section body is unchanged). Without this the new plugin runs on defaults and ignores your old settings.
+> **Bump the version on every repack**: with an unchanged version pnpm considers the lockfile `integrity` still current and does not re-extract, leaving a stale layout behind. Source change → bump `package.json` → `pnpm check` → `npm pack` → `add`.
 
-Restart the dev service after install or upgrade:
+Upgrading from the old name `dsh-qwen38-gateway-compaction`: remove the old plugin, install the new tarball, and rename the `qwen38-gateway-compaction:` section in `$DSH_HOME/settings.yaml` to `gateway-compaction:` (the section body is unchanged). Without this the new plugin runs on defaults and ignores your old settings.
+
+Restart the dev service afterwards on `ubuntu-4090`:
 
 ```sh
 systemctl --user restart dsh-dev-web
 ```
+
+`windows-lite` has no systemd — restart the manually launched `dsh-dev` instance.
 
 Remove:
 
@@ -307,3 +323,9 @@ node test/prompt-sync.mjs
 ## License
 
 MIT, see [`LICENSE`](./LICENSE).
+
+## Repository
+
+This plugin's code is authoritative in the monorepo **[`IamWWT/dsh-plugins`](https://github.com/IamWWT/dsh-plugins) (private)**; a public standalone repo, [`IamWWT/dsh-gateway-compaction`](https://github.com/IamWWT/dsh-gateway-compaction), is kept in sync separately for external sharing (dual-track). Branch model: `main` (integration) / `ubuntu` (local development) / `windows` (Windows side).
+
+Directories follow the [DeepSeek shared-layout convention](../dsh-agent-presets/docs/DIRECTORY-LAYOUT.md); the management root is written `<DEEPSEEK_ROOT>` (`.../deepseek/`). Historical deployment notes are not current machine state, and Bash/systemd commands apply to their own environment only.

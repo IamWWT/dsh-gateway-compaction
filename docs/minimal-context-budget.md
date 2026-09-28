@@ -1,9 +1,19 @@
-# minimal preset 上下文预算与自动管理（终态记录）
+# minimal preset 上下文预算与自动管理（设计依据 + 实现终态）
 
-> **状态（2026-09-19，v1.3.0 终态）**：本文档原设计的「80% 预警 / 98% 自动摘要压缩」
-> 已由 **功能 6「自动压缩救援」（`autoCompaction`，默认开启）以等价/覆盖的方式落地**，
-> 实现与设计有两处明确差异：
->
+## 当前状态
+
+| 项 | 值 |
+|---|---|
+| 文档性质 | **规格/设计依据**（预算公式 + 自动管理语义），兼实现终态记录 |
+| 对应版本 | **1.3.1**（关键设计落地于 1.3.0；公式自 1.1.1 起有效） |
+| 状态 | 设计已落地为功能 6「自动压缩救援」；本文档作为预算推导依据保留 |
+| 维护者 | 本插件开发者 |
+
+**一句话结论**：`minimal` 等未挂官方压缩引擎的 preset，由插件接管上下文预算——
+压力预警（`thresholdRatio × 实际窗口`）+ 400 溢出压缩重试；全链路 fail-open，
+绝不自动硬重置。原设计的「80% 预警 / 98% 自动摘要压缩」已以等价/覆盖方式落地，
+两处与设计的明确差异如下：
+
 > | 原设计 | 实现终态 |
 > |---|---|
 > | 80% 预警（`floor(usableBudget × 0.8)`） | `agent/pre-step` 压力检查：输入达到 `thresholdRatio(默认 0.8) × 实际窗口` 时**提前压缩**（不阻塞、失败放行）。显式配置了 `contextWindows`（如 qwen3.8-27b → 167236）时数值与「80% × 可用输入预算」一致：0.8 × 167236 = 133788 |
@@ -14,7 +24,7 @@
 > 实现细节见 README「功能 6：自动压缩救援」与 `docs/preset-applicability.md`；
 > 原文档其余章节保留，作为设计依据与预算推导记录。
 
-## 结论（设计时）
+## 设计意图（结论）
 
 `minimal` preset 不加载 DSH 官方 `compaction-basic` 自动压缩引擎。插件设计为在 host 层
 监听 `agent/pre-step`，用 token meter 在请求发出前计算输入压力，在配置阈值处预警或压缩。
@@ -91,28 +101,21 @@ gateway-compaction:
 
 ## 自动动作（实现终态）
 
-### 压力预警（设计中的「80% 预警」，已实现）
+**压力预警**（= 设计中的「80% 预警」，已实现）：每个 `agent/pre-step`，若会话路由模型窗口
+已知且该 preset 无内置压缩引擎，输入达到 `thresholdRatio × 窗口`（默认 0.8 × 167236 =
+133788）即在下一请求前先压缩一次（走本插件 wire 层 + 分片救援）；失败放行不阻塞
+（fail-open），日志 `pressure compaction (rescue)`。
 
-每个 `agent/pre-step` 检查点：会话路由模型的可信窗口已知、且该 preset 无内置压缩引擎时，
-输入达到 `thresholdRatio × 窗口`（默认 0.8 × 167236 = 133788）→ 在发出下一请求前
-先做一次压缩（走本插件 wire 层 + 分片救援）。全部失败时放行不阻塞（fail-open），
-日志 `pressure compaction (rescue)`。
-
-### 400 溢出恢复（覆盖原「98% 自动摘要压缩」）
-
-请求被网关以 `context_length_exceeded`（400）拒绝时：若该会话仍有溢出重试预算
-（`maxOverflowRetries`，默认 1）→ 压缩后让 agent loop 重发同一请求。
+**400 溢出恢复**（覆盖原「98% 自动摘要压缩」）：请求被网关以 `context_length_exceeded`(400)
+拒绝且该会话仍有重试预算（`maxOverflowRetries` 默认 1）→ 压缩后让 agent loop 重发同一请求；
 日志 `overflow recovery (rescue)`。每会话独立计数，新 assistant 消息后重置。
 
 设计中的 6 步流程（检查可维护性 → 选可压缩区间 → wire 层 → 分片 → 提交 checkpoint →
-失败不伪造成功）在实现中全部保留，且补充了：
-
-- **绝不双压**：app 级 `compaction` 服务启用，或 preset 挂载了
-  `@deepseek-ai/dsh-compaction-basic`（compositionInventory 扫描，30s TTL）→ 跳过；
-  检测不确定时按「有引擎」处理。
-- 救援引擎为**隔离实例**（`auto: false` 的 `BasicCompactionEngine`，detached ctx），
-  绝不注册为 app 的 `compaction` 服务。
-- 并发保护：同一会话的压缩事务互斥；失败不触发任何不可逆动作（hard reset 永远是手动命令）。
+失败不伪造成功）全部保留，另加三条硬约束：**绝不双压**（app 级 `compaction` 服务启用，
+或 preset 挂载 `@deepseek-ai/dsh-compaction-basic`——compositionInventory 扫描、30s TTL——
+即跳过，检测不确定按「有引擎」处理）；救援引擎为**隔离实例**（`auto:false` 的
+`BasicCompactionEngine`，detached ctx，绝不注册为 app 的 `compaction` 服务）；
+同一会话压缩事务互斥，失败不触发任何不可逆动作。
 
 ## 手动动作
 
@@ -144,3 +147,17 @@ contextWindow - maxOutputTokens - ceil(contextWindow × safetyMarginRatio) > 0
 
 `thresholdRatio`、`maxOverflowRetries` 等已进设置页（「自动压缩救援」开关 + 高级参数）；
 模型窗口用 `chunking.contextWindows`（设置页可改）。
+
+## 历史沿革
+
+- **1.0.x（设计期）**：结论是「minimal 不挂官方压缩引擎，插件需在 host 层监听
+  `agent/pre-step` 自行做预算管理」；当时只有 80% 预警 + 98% 自动摘要压缩的纸面设计。
+- **1.1.1**：`contextWindows` 修正为 `167236`（原用过的 `369144` 为过时值，勿再用）；
+  窗口解析改为「显式配置 > 网关活查 > DSH 声明 > fail-open」四级链。
+- **1.2.0 / 1.3.0**：设计落地为功能 6「自动压缩救援」——80% 预警按 `thresholdRatio × 实际窗口`
+  实现；**98% 独立触发器未实现**，由「400 溢出 → 压缩 → 重试」覆盖；适用面由「仅 minimal」
+  泛化到「所有未挂内置引擎的 preset」；并加入归属判定（绝不双压）。
+- **未实现/占位**：`minimalContext:` 配置块（设计占位，代码不消费）；尾部原文保护、
+  `chunkMaxTokens` 调大、边界感知切片、滚动接力均为未拍板的可选优化。
+- **验收状态**：自动救援的运行期行为（压力预警/溢出恢复日志）**待用户重启 3082 后复验**；
+  测试侧已由 `test/auto-rescue.mjs`（36 断言）覆盖（2026-09-26 记录为绿，本次文档改动未重跑）。

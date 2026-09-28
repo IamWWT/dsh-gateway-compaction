@@ -1,15 +1,21 @@
-# 四个内置 preset 的适用性（代码级验证 + 1.3.0 终态）
+# 四个内置 preset 的适用性（代码级验证 + 1.3.x 终态）
+
+## 当前状态
+
+| 项 | 值 |
+|---|---|
+| 文档性质 | **规格/适用性结论**（代码级验证记录，随版本更新） |
+| 对应版本 | **1.3.1**（验证矩阵定稿于 1.3.0，1.3.1 无功能变化） |
+| 状态 | 结论有效；所有测试 2026-09-26 记录为绿（本次文档改动未重跑） |
+| 维护者 | 本插件开发者 |
 
 > 结论一句话：**插件全部能力（请求改写 + 分片救援 + 手动命令 + 自动压缩救援）对四个
 > 内置 preset 全部适用。**「自动压缩」本身按归属分工：`standard`/`ptc`/`cordis` 由
 > preset 自带的官方 `compaction-basic` 引擎负责，插件**绝不干预**；`minimal` 等未挂
-> 内置引擎的 preset 由插件的自动压缩救援引擎接管（压力预警 + 400 溢出恢复，功能 6，
-> 1.2.0 起实现）。
+> 内置引擎的 preset 由插件的自动压缩救援引擎接管（压力预警 + 400 溢出恢复，功能 6）。
 
-验证日期：2026-09-09 · 对应版本：1.0.3 · 验证方式：代码路径核对 + 自动化测试
-（`test/preset-applicability.mjs`，10 条断言）。
-2026-09-19 复核（1.3.0）：自动压缩救援另由 `test/auto-rescue.mjs`（36 断言）与
-`smoke.mjs` 覆盖；全部测试绿。
+原始验证：2026-09-09，对应 1.0.3，方式 = 代码路径核对 + `test/preset-applicability.mjs`
+（10 断言）；2026-09-19 按 1.3.0 复核并补 `test/auto-rescue.mjs`（36 断言）。沿革见文末。
 
 ## 1. 内置 preset 一览
 
@@ -26,7 +32,7 @@
 `dsh-commands` / `dsh-token-meter` 行——模型路由、命令、token 计量都是 **host(profile)
 层服务**。所以插件作为 profile 级 bundle，其钩子与所有 preset 无关。
 
-## 2. 适用性矩阵（1.3.0 终态）
+## 2. 适用性矩阵（1.3.x 终态）
 
 | 插件能力 | 实现层 | standard / ptc / cordis | minimal（及任何未挂内置引擎的 preset） |
 |---|---|---|---|
@@ -91,29 +97,23 @@ compaction 能力。
 
 ## 4. 自动化验证
 
-`test/preset-applicability.mjs`（10 断言）全部通过，覆盖：
+验证入口：`node test/*.mjs`（**该插件 `package.json` 无 `scripts`，不存在 `pnpm check`**；
+`index.js` / `client.js` 即产物，无构建步骤）。
 
-1. minimal 形状（无 `compaction` 服务、无 `ctx.get`）apply：插件不抛错，**只注册
-   `llm/stream` 瀑布**（auto-rescue 因 `ctx.get` 缺失自禁用）——证明不注入压缩引擎；
-2. 同一形状下手动命令仍注册（`/gateway-compact` / `/clear-context`）；
-3. 命令注册依赖的是 host 服务注入，而非 preset 组装；
-4. `globalThis.fetch` 被替换（进程级）；
-5. 允许模型的压缩请求体被改写（NInfer：有 `reasoning_effort: none`、**无**
-   `chat_template_kwargs`；`max_tokens` 抬到下限；采样写入）——全程无任何压缩引擎；
-6. 白名单外的模型逐字节透传；
-7. llama.cpp 模型保留自己的字段（`chat_template_kwargs.enable_thinking: false` +
-   `reasoning_effort`）——引擎分流正确；
-8. compaction purpose 调用在模型声明了 `off` 时被打上 `reasoningEffort: "off"`；
-9. 非 compaction 调用原样透传（不做全局关思考）；
-10. 未声明 effort 的模型保持默认（此时仍有 wire 层兜底）。
+- `test/preset-applicability.mjs`（10 断言）覆盖矩阵成立性：minimal 形状（无 `compaction`
+  服务、无 `ctx.get`）下只注册 `llm/stream` 瀑布、不注入压缩引擎，且手动命令仍注册
+  （证明命令依赖 host 服务注入而非 preset 组装）；`globalThis.fetch` 被进程级替换；
+  NInfer 允许模型被改写（有 `reasoning_effort: none`、无 `chat_template_kwargs`、
+  `max_tokens` 抬到下限）而 llama.cpp 模型保留自身字段；白名单外模型与
+  compaction-purpose 之外的调用逐字节透传。
+- `test/auto-rescue.mjs`（36 断言）：`decideBuiltInCompaction` 全部分支（app 级引擎 /
+  preset 引擎 / 无引擎 / 检测不确定 / `ctx.get` 缺失）、`patchModelInfoWindows` 语义
+  （declared < 配置值时保留 declared，防硬件超窗）、`autoCompactionEngineConfig` 映射与回退。
+- 其余：`smoke.mjs`（58 断言，门控/切片/命令注册）、`integration-fetch.mjs`（端到端 fetch
+  改写）、`rescue-e2e.mjs`（分片救援）、`window-resolution.mjs`（窗口解析优先级）、
+  `client-smoke.mjs`（设置卡片）、`prompt-sync.mjs`（提示词展示同步）。
 
-自动压缩救援由 `test/auto-rescue.mjs`（36 断言）专项覆盖：`decideBuiltInCompaction`
-全部分支（app 级引擎 / preset 引擎 / 无引擎 / 检测不确定 / ctx.get 缺失）、
-`patchModelInfoWindows` 纯函数语义（declared < 配置值时保留 declared，防硬件超窗）、
-`autoCompactionEngineConfig` 配置段映射与回退。
-其余相关：`smoke.mjs`（门控/切片/命令注册，58 断言）、`integration-fetch.mjs`
-（端到端 fetch 改写）、`rescue-e2e.mjs`（分片救援）、`window-resolution.mjs`
-（窗口解析优先级）、`client-smoke.mjs`（设置卡片）、`prompt-sync.mjs`（提示词展示同步）。
+> 2026-09-26 记录为全绿；**本次文档改动未重跑**，属未复验的历史记录。
 
 ## 5. minimal 自动上下文管理（已实现 = 功能 6「自动压缩救援」）
 
@@ -151,3 +151,16 @@ compaction 能力。
   无额外压缩（归属判定先行）。
 - **服务端硬限制**：NInfer 超过 `167236` 输入 token 直接 `context_length_exceeded`，
   插件预算计算必须与服务端一致（见 `minimal-context-budget.md`）。
+
+## 7. 历史沿革
+
+- **2026-09-09（1.0.3）**：首次代码级核对四个内置 preset 的组装差异，结论 = 插件能力与
+  preset 无关（host/profile 级），`minimal` 因不挂 `compaction-basic` 成为唯一缺口。
+- **1.1.x**：手动命令补齐 `/clear-context`（零 LLM 调用硬重置）；双 slot 注册；窗口自动解析。
+- **1.2.0**：自动压缩救援（功能 6）实现，缺口（minimal 无引擎）被插件救援引擎接管；
+  同时确立「归属判定优先、绝不双压」的硬约束。
+- **1.3.0**：适用面由「仅 minimal」泛化到「所有未挂内置引擎的 preset」；改名
+  `/gateway-compact`。矩阵与证据按该终态定稿。
+- **1.3.1**：仅文档对齐（含本文件），功能性结论无变化。
+- **未复验项**：运行期行为（standard 零变化、minimal 溢出恢复日志）待用户重启 3082 后验收；
+  测试结论来自 2026-09-26 记录，本次文档改动未重跑。

@@ -2,8 +2,15 @@
 
 ## Unreleased
 
+- 文档：README（中/英）新增「环境支持矩阵」节（`ubuntu-4090` 全量 / `windows-lite` 降级：无本地网关，指向远端 OpenAI 兼容端点时压缩机制与 `/clear-context` 可用）；安装章节改为现行 **tgz 流程**（`pnpm check` → `npm pack` → `dsh-dev plugin --profile web add <tgz>`，重打包必须升版本号）。
 - 修复 `client-smoke.mjs` 在 Windows 上把文件 URL 误作路径、导致盘符重复的问题；使用 `fileURLToPath` 转换后可跨平台运行。
 - 提示词源码校验按 JavaScript 模板字符串的运行时规则处理 CRLF，避免 Windows checkout 产生误报。
+
+## 仓库与安装（当前状态，2026-09-26）
+
+- **代码准绳**：monorepo `IamWWT/dsh-plugins`（private）；本插件同时保留 public 独立仓 `IamWWT/dsh-gateway-compaction` 并单独同步更新（双轨）。原 16 个私有独立仓已于 2026-09-26 从 GitHub 删除。
+- **安装**：一律 tgz 安装（`pnpm check` → `npm pack` → `dsh-dev plugin --profile web add <tgz>`），无源码 link 安装；重打包必须升版本号。
+- **环境**：`ubuntu-4090` = 源码树 + systemd（3082/3083）；`windows-lite` = 源码树 + `dsh-dev` 手动启动（无 systemd），且因独显差**无本地网关**（降级见 README「环境支持矩阵」）。
 
 ## 1.3.1 (2026-09-24)
 
