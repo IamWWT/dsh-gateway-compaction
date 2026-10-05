@@ -115,12 +115,18 @@ test('preprocessing is private and zero keeps tool parameters/results intact', (
 test('all UI fields exist in schema; invalid ranges rejected and partial model override inherits', () => {
   const resolved = Config['~standard'].validate({}); assert.equal(resolved.issues, undefined);
   const cfg = readConfig(resolved.value);
-  for (const [, fields] of GROUPS) for (const [key] of fields) {
-    const parts = key.split('.'); let value = cfg;
-    for (const part of parts.slice(0, -1)) value = value[part];
-    assert.ok(value && typeof value === 'object', key);
-    // Optional retention fields intentionally have no default.
-    assert.ok(Object.hasOwn(value, parts.at(-1)) || /retain/.test(key), key);
+  for (const group of GROUPS) {
+    assert.equal(group.length, 4, 'group must be [title, badge, summary, fields]');
+    assert.ok(['常用', '高级'].includes(group[1]), `group ${group[0]} badge`);
+    assert.ok(typeof group[2] === 'string' && group[2].length > 0, `group ${group[0]} summary`);
+    for (const [key, , , help] of group[3]) {
+      const parts = key.split('.'); let value = cfg;
+      for (const part of parts.slice(0, -1)) value = value[part];
+      assert.ok(value && typeof value === 'object', key);
+      // Optional retention fields intentionally have no default.
+      assert.ok(Object.hasOwn(value, parts.at(-1)) || /retain/.test(key), key);
+      assert.ok(help.includes('键：'), `${key} help must name its configuration key`);
+    }
   }
   for (const chunking of [{ retries: -1 }, { chunkRatio: 1 }, { keepRecentMessages: 0.5 }, { timeoutMs: 0 }]) assert.ok(Config['~standard'].validate({ chunking }).issues);
   assert.throws(() => validateRelations({ summaryRoute: { provider: 'p' } }), /provider/);

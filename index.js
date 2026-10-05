@@ -5,7 +5,7 @@ import { registerTransactions } from './transactions.js';
 export { Config } from './config.js';
 export { MANUAL_COMPACT_COMMAND, MANUAL_NEW_CONTEXT_COMMAND, makeHardResetEngine } from './transactions.js';
 export const name = 'gateway-compaction';
-export const VERSION = '2.0.0';
+export const VERSION = '2.0.1';
 export const inject = ['llm'];
 export const COMPACT_EFFORT_SETTINGS_NAMESPACE = 'gateway-compaction';
 const COMPACTION_BASIC_MODULE = '@deepseek-ai/dsh-compaction-basic';

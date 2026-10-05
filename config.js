@@ -9,7 +9,7 @@ const chunkFields = {
   chunkMaxTokens: integer(128, 262144), mergeMaxTokens: integer(128, 262144),
   maxChunks: integer(1, 4096), keepRecentMessages: integer(0, 1000), keepRecentTokens: integer(0, 1000000),
   headroomTokens: integer(0, 1000000), safetyRatio: ratio(0, 0.5), tokenSafetyFactor: ratio(1, 4),
-  maxOutputTokens: integer(128, 262144), maxMergeRounds: integer(1, 32), maxCalls: integer(1, 8192),
+  maxOutputTokens: integer(128, 262144), maxStreamInputTokens: integer(0, 10000000), betweenCallsMs: integer(0, 60000), maxMergeRounds: integer(1, 32), maxCalls: integer(1, 8192),
   retries: integer(0, 8), timeoutMs: integer(100, 3600000), totalTimeoutMs: integer(100, 14400000),
   retryDelayMs: integer(0, 60000),
 };
@@ -19,6 +19,7 @@ const sampling = () => z.object({ temperature: z.union([ratio(0, 2), z.const(nul
 export const Config = z.object({
   enabled: z.boolean().default(true).volatile(), matchAll: z.boolean().default(true).volatile(),
   models: z.array(z.string()).default([]).volatile(), effort: z.string().default('off').volatile(),
+  compactionEffort: z.string().default('').volatile(),
   supplementOn: z.boolean().default(true).volatile(), supplement: z.string().default(DEFAULTS.supplement).volatile(),
   maxTokensFloor: integer(0, 262144).default(8192).volatile(), slimOversized: z.boolean().default(true).volatile(),
   sampling: sampling().default({ temperature: null }).volatile(),

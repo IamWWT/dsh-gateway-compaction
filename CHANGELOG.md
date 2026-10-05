@@ -1,5 +1,45 @@
 # Changelog
 
+## 2.0.1 (2026-10-05)
+
+**修复：压缩在真实网关上必然失败（引擎报「manual compaction could not produce a smaller
+summary」）**——该文案是 `compaction-basic/src/region.ts:296` 的**通配归类**（非 commit/changed
+的一切失败都归为摘要失败），真因经实测拆成三条，且都与上下文窗口无关：
+
+- **实测证据**（同一段 767k tokens 真实会话历史，goai / qwen3.8-max-0902）：
+  1. **请求频率**：连续密集请求被网关直接重置（ECONNRESET，约 5 秒断开，多次稳定复现）；
+     同样的请求在 25–30 秒冷却后单发**全部成功**（20k/90k/**170k tokens 都通过**，14–23 秒返回）。
+     即**输入大小不是约束**，频率才是。
+  2. **单条消息过大**：283k 字符挤在**一条** user 消息里被重置，同样内容拆成多条小消息即可通过。
+  3. **思考吃光输出预算**：模型未关思考时把 `max_tokens` 全用在推理上，`content` 为空而
+     `finish_reason=length`（实测 35s / 100s 两次空输出）→ 摘要为空。
+- **为什么必炸**：宿主压缩调用始终是流式（`compaction-basic` 的 summarizer 走 `ctx.llm.stream()`），
+  2.0.0 的每片只发一次且不等待、片内文本合成一条大消息、又不控制思考——三个坑全部命中。
+- **修复（通用 + 自适应，不写死任何网关常量）**：
+  1. **调用间隔** `chunking.betweenCallsMs`（默认 1500ms）+ 连接层失败
+     （`isTransportFailure`：fetch `TypeError`/`ECONNRESET`/socket hang up，查 `cause` 链）
+     纳入可重试并指数退避（`retryDelayMs` 默认 1000ms）。
+  2. **消息粒度**：所有历史文本经 `userMessages()` 切成 ≤16000 字符的多条消息，任何单条消息
+     都不会无界增长（不再触发「单条巨大消息」重置）。
+  3. **自适应缩片**：超窗、输出饱和、连接重置都触发该段对半切分重试，绝不丢弃源文本；
+     `chunking.maxStreamInputTokens`（**默认 0 = 不限制**，实测大输入可行）仅供受限网关使用。
+  4. **思考控制** `compactionEffort`（默认空）：填写后每次摘要调用原样发送该推理强度，用于
+     「默认就思考、且适配器未声明强度」的模型；实测该取值使 reasoning 输出归零、摘要正常返回。
+  5. **降级不炸链**（参考 AgentScope `ConversationCompactor`：摘要失败降级占位文本，只透传取消）：
+     单段重试后仍失败 → 写占位标记继续；合并失败或不收敛 → 用各段摘要拼接收尾。
+     `maxCalls`/`maxChunks` 仍是安全阀（保持致命，不被降级绕过）。
+  6. `chunking.chunkMaxTokens` 默认 2048 → 4096（给输出留出被思考挤占的空间）；
+     `totalTimeoutMs` 默认 15 分钟 → 90 分钟。
+- **设置页按功能域重构**（`ui-fields.js`）：6 组 = 压缩行为 / 超长会话分片 / **网关卡顿·限流适配**
+  / 预算与窗口 / 摘要输入瘦身 / 命令与自动兜底，每组带「常用｜高级」徽标与一句话目标说明，
+  常用组默认展开；字段标签中文在前、配置键名单独小字、显示默认值与单位，每项带「默认」复位按钮。
+  `scripts/build-client.mjs` 补上产物门禁（`__ModuleLoader__`、插件 id、禁顶层 import/export、
+  `node --check`），`client.js` 由 `src/client.js` + `ui-fields.js` 生成，不再手工同步。
+- 验证：`native.test.mjs` 13（含 ui-fields ↔ Config 覆盖：组结构、徽标、help 必含键名）、
+  `native-compaction.mjs`、`auto-rescue` 36 全绿；真实网关端到端见上方实测证据。
+
+## 2.0.0 (2026-10-05)
+
 ## 2.0.0 (2026-10-05)
 
 **原生压缩重构（provider-neutral）**——不再劫持 fetch 给本地网关打补丁，改为在公开 DSH

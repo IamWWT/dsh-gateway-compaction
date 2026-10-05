@@ -36,7 +36,7 @@ window.__ModuleLoader__.load({ id: 'dsh-gateway-compaction', factory: require =>
     const [edits, setEdits] = useState({}), [revision, setRevision] = useState(null);
     const [saving, setSaving] = useState(false), [message, setMessage] = useState('');
     const stage = (key, value) => { if (revision === null) setRevision(snapshot.revision); setEdits(prev => ({ ...prev, [key]: value })); setMessage(''); };
-    const fields = GROUPS.flatMap(g => g[1]);
+    const fields = GROUPS.flatMap(g => g[3]);
     const read = f => Object.hasOwn(edits, f[0]) ? edits[f[0]] : format(f, get(snapshot.value, f[0].split('.')));
     async function save() {
       if (!snapshot.writable) { setMessage('配置暂不可写，请等待宿主连接恢复。'); return; }
@@ -74,22 +74,38 @@ window.__ModuleLoader__.load({ id: 'dsh-gateway-compaction', factory: require =>
       } catch (error) { setMessage(error.message); } finally { setSaving(false); }
     }
     function row(f) {
-      const value = read(f), id = `gc-${f[0]}`;
+      const [key, label, kind, text, min, max, fallback] = f;
+      const value = read(f), id = `gc-${key}`;
       let error = ''; try { parse(f, value); } catch (e) { error = e.message; }
-      const common = { id, disabled: saving, 'aria-invalid': Boolean(error), value, style: control, onChange: e => stage(f[0], e.target.value) };
+      // The help text carries "…说明。键：theKeyName"; the key is shown as a
+      // separate monospace note so the sentence itself stays readable.
+      const cut = text.lastIndexOf('键：');
+      const body = cut === -1 ? text : text.slice(0, cut).trim();
+      const keyNote = cut === -1 ? '' : text.slice(cut);
+      const placeholder = kind === 'boolean' || fallback === undefined || fallback === null ? '' : `默认 ${fallback}`;
+      const common = { id, disabled: saving, 'aria-invalid': Boolean(error), value, placeholder, style: control, onChange: e => stage(key, e.target.value) };
       return h('div', { key: id, style: { marginBottom: '16px', minWidth: 0 } },
-        h('label', { htmlFor: id, style: { display: 'block', fontWeight: 600, marginBottom: '5px' } }, f[1]),
-        f[2] === 'boolean' ? h('input', { id, type: 'checkbox', checked: value === 'true', disabled: saving, onChange: e => stage(f[0], String(e.target.checked)) })
-          : ['multiline', 'jsonObject'].includes(f[2]) ? h('textarea', { ...common, rows: 4 })
-          : h('input', { ...common, type: ['number', 'optionalNumber'].includes(f[2]) ? 'number' : 'text', min: f[4], max: f[5], step: 'any' }),
-        h('p', { style: help }, f[3]), error ? h('p', { role: 'alert', style: help }, error) : null);
+        h('div', { style: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: '8px' } },
+          h('label', { htmlFor: id, style: { display: 'block', fontWeight: 600, marginBottom: '5px' } }, label),
+          fallback === undefined ? null : h('button', {
+            type: 'button', title: `恢复默认值 ${fallback === null ? '（留空）' : fallback}`, disabled: saving,
+            style: { ...button, padding: '1px 8px', fontSize: '12px' }, onClick: () => stage(key, format(f, fallback))
+          }, '默认')),
+        kind === 'boolean' ? h('input', { id, type: 'checkbox', checked: value === 'true', disabled: saving, onChange: e => stage(key, String(e.target.checked)) })
+          : ['multiline', 'jsonObject'].includes(kind) ? h('textarea', { ...common, rows: 4 })
+          : h('input', { ...common, type: ['number', 'optionalNumber'].includes(kind) ? 'number' : 'text', min, max, step: 'any' }),
+        h('p', { style: help }, body),
+        keyNote ? h('p', { style: { ...help, opacity: 0.72, fontFamily: 'monospace' } }, keyNote) : null,
+        error ? h('p', { role: 'alert', style: { ...help, fontWeight: 600 } }, `⚠ ${error}`) : null);
     }
     return h('div', { style: { width: '100%', maxWidth: '960px', color: 'var(--dsw-alias-text-primary)' } },
-      h('h2', null, '上下文压缩 · 2.0'),
-      h('p', { style: help }, '通过宿主模型适配器处理压缩。输入、输出、保留尾部与安全余量统一预算。原始会话日志保持不变。'),
+      h('h2', null, '上下文压缩'),
+      h('p', { style: help }, '摘要压缩的分片、预算与重试策略。原始会话日志保持不变，普通对话不受影响。标「常用」的分组默认展开，标「高级」的按需调整即可。'),
       !snapshot.writable ? h('p', { role: 'status' }, '正在等待可写配置；若持续不恢复，请检查插件 Host 是否启用。') : null,
-      ...GROUPS.map(([title, fs], i) => h('details', { key: title, open: i === 0, style: { marginTop: '16px', padding: '12px', border: '1px solid var(--dsw-alias-border-default)', borderRadius: '8px' } },
-        h('summary', { style: { cursor: 'pointer', fontWeight: 600, marginBottom: '12px' } }, title),
+      ...GROUPS.map(([title, badge, summary, fs]) => h('details', { key: title, open: badge === '常用', style: { marginTop: '16px', padding: '12px', border: '1px solid var(--dsw-alias-border-default)', borderRadius: '8px' } },
+        h('summary', { style: { cursor: 'pointer', fontWeight: 600 } }, title,
+          h('span', { style: { marginLeft: '8px', padding: '1px 8px', borderRadius: '10px', fontSize: '12px', fontWeight: 400, border: '1px solid var(--dsw-alias-border-default)', color: 'var(--dsw-alias-text-secondary)' } }, badge)),
+        h('p', { style: { ...help, margin: '6px 0 12px' } }, summary),
         h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 280px), 1fr))', gap: '0 20px' } }, ...fs.map(row)))),
       h('details', { style: { margin: '16px 0' } }, h('summary', { style: { cursor: 'pointer', fontWeight: 600 } }, '按 provider / model 精确覆盖'),
         h('p', { style: help }, '仅覆盖填写的字段，其余继承全局值。可覆盖 effort、maxTokensFloor、sampling、chunking、preprocessing、slimOversized、supplementOn、supplement。使用宿主中的精确 provider/model ID。'),

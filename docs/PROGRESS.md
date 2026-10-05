@@ -8,8 +8,8 @@
 | 项 | 值 |
 |---|---|
 | 文档性质 | 进度真源 / 操作与状态记录 |
-| 对应版本 | **1.5.2**（以 `package.json` 为准） |
-| 状态 | 功能完成；**1.5.2 已装 desktop**（Windows profile `desktop`）**待重启验收**（obisdian 会话 `/gateway-compact` 成功压缩）；Ubuntu 3082 待重装 |
+| 对应版本 | **2.0.1**（以 `package.json` 为准） |
+| 状态 | 2.0.0 由 codex 完成 native 重构（provider-neutral）；**2.0.1 修复「压缩在真实网关必失败」根因（网关流式大输入连接重置）**；已装 desktop 待重启验收（`/gateway-compact` 成功压缩）；Ubuntu 3082 待重装 |
 | 维护者 | 本插件开发者（monorepo `dsh-plugins/dsh-gateway-compaction/`） |
 
 ## 一句话定位
@@ -140,3 +140,32 @@ Qwen3.8 本地网关（llama.cpp / NInfer）上的会话压缩修复插件：tgz
     fallback 窗口触发）。
   - **已打包 1.5.2 装 desktop（待重启验收）**；public 仓待同步。前提：重启脚本改用 detached
     独立进程（agent 杀宿主=自杀，此前两次 kill 后 Start-Process 未执行）。
+
+- **2.0.0（2026-10-05，codex 重构）**：`native-compaction.js` 原生中间件（走公开 `ctx.llm`
+  waterfall，purpose=compaction 拦截）替换 fetch 劫持；`config.js` 的 `Config` schema 统一配置
+  （`cordis.patch.yml` 只做注册）；分片 map-reduce + 迭代收敛（`maxMergeRounds`）；保尾双保险
+  （`keepRecentMessages`/`keepRecentTokens`）；`modelPolicies` 按模型路由；`transactions.js`
+  事务化 `/gateway-compact`、`/clear-context`。codex 会话因 usage limit 中断（未装包、
+  `scripts/build-client.mjs` 空、`scripts/check.mjs` 缺失、`host.test.mjs` fixture 断言
+  `messages.length<=5` 与「按 token 大块切片」冲突而失败）。
+
+- **2.0.1（2026-10-05）事故根因与修复**——用户重启后 `/gateway-compact` 报
+  「manual compaction could not produce a smaller summary」：
+  - **根因（实测锁定）**：该文案是 `compaction-basic/src/region.ts:296` 的**通配归类**
+    （非 commit/changed 的一切失败都归为摘要失败），真因是**网关对流式大输入的连接重置**：
+    同一段 767k tokens 真实会话，流式 30k 通过、**60k/90k/120k 全部 ECONNRESET**（~5 秒即断，
+    3/3 稳定），**同体非流式可过 126k+**（非流式 310k 亦通过）；另**单条消息 283k 字符**也被
+    重置，拆成多条小消息后可过。宿主压缩**必然流式**（`compaction-basic/src/summarizer.ts:163`
+    `for await (const chunk of ctx.llm.stream(options))`），而 2.0.0 单片预算 ≈170k tokens
+    → 每片首发即被重置；中间件对无 `code` 的 fetch 网络错误**还不重试** → 直接 throw。
+  - **修复**：新增 `chunking.maxStreamInputTokens`（默认 45000，0=不限），`fits = min(窗口预算,
+    maxStreamInputTokens)` 统一约束 **simple/分片/合并** 三处输入判定；连接层失败
+    （`isTransportFailure`：TypeError/fetch failed/ECONNRESET/socket hang up/terminated，查
+    `cause` 链）纳入可重试；`totalTimeoutMs` 默认 15min → 90min；设置页加对应字段
+    （`ui-fields.js` + client.js 内嵌副本手动同步，因 build 脚本为空）。
+  - **验证**：native.test 13（含 ui-fields↔Config schema 覆盖）、native-compaction PASS、
+    auto-rescue 36 全绿；端到端真实会话+真实网关：修复后 `streamCap=45000` → 20 片，
+    首片 39k tokens 输入 **22 秒成功**（修复前同量 5 秒重置）。
+  - 诊断副产品：`~/.dsh/logs` 不落插件日志（桌面宿主 logger 不写该目录），排障需靠复现 +
+    会话日志；`git add/commit` 在 workspace-write 沙箱下被 `.git/index.lock` 拒（full access 可写，
+    .git 本身可写——非 ACL 问题）。
