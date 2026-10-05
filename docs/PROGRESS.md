@@ -151,21 +151,37 @@ Qwen3.8 本地网关（llama.cpp / NInfer）上的会话压缩修复插件：tgz
 
 - **2.0.1（2026-10-05）事故根因与修复**——用户重启后 `/gateway-compact` 报
   「manual compaction could not produce a smaller summary」：
-  - **根因（实测锁定）**：该文案是 `compaction-basic/src/region.ts:296` 的**通配归类**
-    （非 commit/changed 的一切失败都归为摘要失败），真因是**网关对流式大输入的连接重置**：
-    同一段 767k tokens 真实会话，流式 30k 通过、**60k/90k/120k 全部 ECONNRESET**（~5 秒即断，
-    3/3 稳定），**同体非流式可过 126k+**（非流式 310k 亦通过）；另**单条消息 283k 字符**也被
-    重置，拆成多条小消息后可过。宿主压缩**必然流式**（`compaction-basic/src/summarizer.ts:163`
-    `for await (const chunk of ctx.llm.stream(options))`），而 2.0.0 单片预算 ≈170k tokens
-    → 每片首发即被重置；中间件对无 `code` 的 fetch 网络错误**还不重试** → 直接 throw。
-  - **修复**：新增 `chunking.maxStreamInputTokens`（默认 45000，0=不限），`fits = min(窗口预算,
-    maxStreamInputTokens)` 统一约束 **simple/分片/合并** 三处输入判定；连接层失败
-    （`isTransportFailure`：TypeError/fetch failed/ECONNRESET/socket hang up/terminated，查
-    `cause` 链）纳入可重试；`totalTimeoutMs` 默认 15min → 90min；设置页加对应字段
-    （`ui-fields.js` + client.js 内嵌副本手动同步，因 build 脚本为空）。
-  - **验证**：native.test 13（含 ui-fields↔Config schema 覆盖）、native-compaction PASS、
-    auto-rescue 36 全绿；端到端真实会话+真实网关：修复后 `streamCap=45000` → 20 片，
-    首片 39k tokens 输入 **22 秒成功**（修复前同量 5 秒重置）。
-  - 诊断副产品：`~/.dsh/logs` 不落插件日志（桌面宿主 logger 不写该目录），排障需靠复现 +
-    会话日志；`git add/commit` 在 workspace-write 沙箱下被 `.git/index.lock` 拒（full access 可写，
-    .git 本身可写——非 ACL 问题）。
+  - **文案性质**：`compaction-basic/src/region.ts:296` 的**通配归类**（非 commit/changed 的
+    一切失败都归为摘要失败），真因必须从 cause 链/复现里找。
+  - **根因（实测拆成三条，均与上下文窗口无关；同一段 767k tokens 真实会话）**：
+    1. **请求频率**（主因）：连续密集请求被网关直接重置（ECONNRESET，~5 秒断开，多次稳定复现）；
+       同样的请求 **25–30 秒冷却后单发全部成功——20k/90k/170k tokens 都通过**（14–23 秒返回）。
+       ⇒ **输入大小不是约束，频率才是**（早期「30k 通过/60k 重置」的阶梯结论是限流叠加的假象，
+       已修正）。
+    2. **单条消息过大**：283k 字符挤在一条 user 消息里被重置，同内容拆成多条小消息即可通过。
+    3. **思考吃光输出预算**：未关思考时模型把 `max_tokens` 全花在推理上，`content` 为空而
+       `finish_reason=length`（实测两次空输出，35s/100s）→ 摘要为空。
+    又：宿主压缩**必然流式**（`compaction-basic/src/summarizer.ts:163`
+    `for await (const chunk of ctx.llm.stream(options))`），2.0.0 每片只发一次且不等待、
+    片内文本合成一条大消息、又不控制思考——三个坑全中，中间件对无 `code` 的网络错误还**不重试**。
+  - **修复（通用 + 自适应，不写死任何网关常量）**：`betweenCallsMs`（默认 1500ms）调用间隔；
+    `userMessages()` 把所有历史切成 ≤16000 字符多条消息；`isTransportFailure`（fetch TypeError /
+    ECONNRESET / socket hang up，查 `cause` 链）纳入可重试并指数退避；超窗/输出饱和/连接重置
+    一律触发**该段对半缩片重试**（不丢源文本）；`maxStreamInputTokens` 默认 **0（不限制）**，
+    仅供受限网关配置；新增 `compactionEffort`（默认空，填 `none` 则在每次摘要调用原样发送该
+    推理强度——实测使 reasoning 输出归零）；**降级不炸链**（参考 AgentScope
+    `ConversationCompactor`：段失败写占位继续，合并失败/不收敛用分片摘要拼接收尾；
+    `maxCalls`/`maxChunks` 仍是致命安全阀）；`chunkMaxTokens` 2048→4096；
+    `retryDelayMs` 500→1000；`totalTimeoutMs` 15min→90min。
+  - **设置页重构**：6 组功能域（压缩行为 / 超长会话分片 / **网关卡顿·限流适配** / 预算与窗口 /
+    摘要输入瘦身 / 命令与自动兜底），每组带「常用｜高级」徽标 + 目标说明，常用组默认展开；
+    字段中文标签在前、配置键名单独小字、显示单位与默认值、每项「默认」复位按钮；
+    `scripts/build-client.mjs` 补产物门禁，`client.js` 改由 `src/client.js` + `ui-fields.js`
+    生成（不再手工同步）。
+  - **端到端验证（真实会话 + 真实网关，全部修复就位）**：window=1M、2 片、4 次调用、
+    **308 秒成功**，产出 4018 字符结构化 checkpoint（含真实 SESSION INTENT/SUMMARY）。
+    其中一片空输出被重试救回——韧性链路生效。
+  - 诊断副产品：`~/.dsh/logs` 不落插件日志（桌面宿主 logger 不写该目录），排障靠复现脚本；
+    `git add/commit` 在 workspace-write 沙箱下被 `.git/index.lock` 拒（full access 正常，
+    .git 本身可写——非 ACL 问题）；桌面版会改写 profile 的 `cordis.patch.yml`（手工插入的
+    模型声明会被重写/挪位，改动需复核）。
