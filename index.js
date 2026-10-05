@@ -282,10 +282,12 @@ const DEFAULT_KEEP_RECENT_MESSAGES = 15;
 /**
  * Last-resort context window (tokens) for a model whose window cannot be
  * resolved any other way (no settings entry, no `/v1/models` disclosure, no
- * dsh declaration): the goai/qwen3.8-max-0902 declared window. Used so an
- * oversized compaction for such a model still gets chunked instead of being
- * forwarded into a guaranteed overflow. The per-slice budget still applies a
- * 0.7 ratio, leaving margin for a genuinely smaller real window.
+ * dsh model-config declaration): aligned with llm-pi-ai's own built-in
+ * `DEFAULT_CONTEXT_WINDOW` (262144) so the plugin's chunk budget can never
+ * exceed the client's overflow-rejection line for an unresolvable model. The
+ * per-slice budget still applies a 0.7 ratio, leaving margin for a genuinely
+ * smaller real window. Models WITH a resolvable window (e.g. the declared
+ * `contextWindow` on the goai provider entry) never reach this fallback.
  */
 export const DEFAULT_CHUNK_WINDOW = 262144;
 /**
