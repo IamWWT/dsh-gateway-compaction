@@ -167,85 +167,62 @@ for (const lang of ['zh', 'en']) {
   }
 }
 
-// Two intentional surfaces: the legacy settings-page card AND the dsh ≥ 0.1.6
-// plugin-manager bundle card. Both edit the same settings namespace through
-// one shared controller. A third registration (e.g. a duplicate left-nav
-// entry) is a bug.
-assert.equal(slotEntries.length, 2, 'exactly two surfaces registered: settings-tab card + plugin-manager bundle card')
-const entry = slotEntries.find((e) => e.options.name === 'settings.plugin.item')
-assert.ok(entry, 'settings-tab card entry present')
-assert.equal(entry.options.key, 'gateway-compaction')
+// Since upstream 0.1.7-rc.1 (commit 90af3110b7, 2026-09-16) the legacy
+// `settings.plugin.item` slot is RETIRED and the plugin registers exactly one
+// surface: the dsh ≥ 0.1.6 plugin-manager bundle card (`plugins.bundle.config`,
+// keyed by the package name). A second registration is a bug.
+assert.equal(slotEntries.length, 1, 'exactly one surface registered: plugin-manager bundle card')
+const entry = slotEntries.find((e) => e.options.name === 'plugins.bundle.config')
+assert.ok(entry, 'plugin-manager bundle card entry present')
+assert.equal(entry.options.key, 'dsh-gateway-compaction')
 assert.equal(entry.options.locale, 'gateway-compaction')
 assert.equal(typeof entry.component, 'function')
 const face = entry.options.inject()
-assert.ok(face.hooks.gatewayCard, 'face exposes the card store hook')
+assert.ok(face.hooks.qwen38Card, 'bundle face exposes the card store hook')
 for (const fn of ['edit', 'resetField', 'save', 'discard', 'toggleOpen']) assert.equal(typeof face[fn], 'function')
-
-const bundleEntry = slotEntries.find((e) => e.options.name === 'plugins.bundle.config')
-assert.ok(bundleEntry, 'plugin-manager bundle card entry present')
-assert.equal(bundleEntry.options.key, 'dsh-gateway-compaction')
-assert.equal(typeof bundleEntry.component, 'function')
-const bundleFace = bundleEntry.options.inject()
-assert.ok(bundleFace.hooks.gatewayCard, 'bundle face exposes the card store hook')
-assert.equal(bundleFace.hooks.gatewayCard, face.hooks.gatewayCard, 'both surfaces share one controller')
 
 // ---------------------------------------------------------------------------
 // Render pass 1: base value + one user override.
 // ---------------------------------------------------------------------------
 const t = (key) => localeRegisters[0].dict.zh[key]
-let props = { t, useQwen38Card: (sel) => sel(face.hooks.gatewayCard.getSnapshot()) }
+let props = { t, useQwen38Card: (sel) => sel(face.hooks.qwen38Card.getSnapshot()) }
 
-// Collapsible card, same reading gesture as the built-in plugin cards: closed
-// by default, the header is the disclosure button, and a settled save closes it
-// again. Controls render only while open.
-const closedHtml = render(entry.component(props))
-assert.match(closedHtml, /aria-expanded="false"/, 'card starts collapsed')
-assert.ok(!/maxTokensFloor/.test(closedHtml), 'collapsed card hides its controls')
-assert.match(closedHtml, /本地网关压缩与上下文管理/, 'collapsed card still names the plugin')
-face.toggleOpen()
-assert.equal(face.hooks.gatewayCard.getSnapshot().open, true, 'toggleOpen opens the card')
-const renderCard = () => {
-  if (!face.hooks.gatewayCard.getSnapshot().open) face.toggleOpen()
-  return render(entry.component(props))
-}
+// The bundle page draws the title/frame itself; the entry renders the fields
+// directly for view: 'page' and nothing outside that surface (no card chrome,
+// no disclosure — since upstream 0.1.7 the legacy settings.plugin.item card
+// is retired and this is the single surface).
+const renderFields = () => render(entry.component({ ...props, view: 'page' }))
+assert.equal(render(entry.component(props)), '', 'bundle entry renders nothing outside the plugin page')
 
-let html = renderCard()
-assert.match(html, /本地网关压缩与上下文管理/, 'card title renders')
+let html = renderFields()
 assert.match(html, /Qwen3\.8-27B-GGUF/, 'model id renders')
 assert.match(html, /262144/, 'context window renders')
 assert.match(html, /20000/, 'user-overridden maxTokensFloor renders (not the base 16384)')
-assert.match(html, /已覆盖默认值/, 'override badge on the overridden field')
 assert.ok(!/maxTokensFloor" value="16384"/.test(html), 'base value hidden where user override exists')
-assert.match(html, /作用域/, 'card carries the scope banner')
+assert.match(html, /作用域/, 'page carries the scope banner')
 
-// The manual-command hint moved into the card body (the dedicated left-nav
+// The manual-command hint moved into the page body (the dedicated left-nav
 // section is gone), so the plugins tab remains the single, complete home.
-assert.match(html, /\/gateway-compact/, 'card body shows the manual command hint')
-
-// The dsh ≥ 0.1.6 plugin page renders the identical fields without the card
-// chrome (the page draws the title/frame itself); outside that surface the
-// entry renders nothing.
-const bundleHtml = render(bundleEntry.component({ ...props, view: 'page' }))
-assert.match(bundleHtml, /\/clear-context/, 'bundle page renders the manual command hint')
-assert.match(bundleHtml, /基础设置/, 'bundle page renders the field sections')
-assert.equal(render(bundleEntry.component(props)), '', 'bundle entry renders nothing outside the plugin page')
+assert.match(html, /\/gateway-compact/, 'page body shows the manual command hint')
+assert.match(html, /\/clear-context/, 'page renders the manual command hint too')
+assert.match(html, /基础设置/, 'page renders the field sections')
 
 // ---------------------------------------------------------------------------
 // v0.4 UI: enum dropdown, hover tooltips, rescue-gated dimming.
 // ---------------------------------------------------------------------------
-assert.match(html, /<select[^>]*id="plugin-config-gateway-wireReasoning"/, 'wireReasoning renders as a select')
+assert.match(html, /<select[^>]*id="plugin-config-gateway-plugins-wireReasoning"/, 'wireReasoning renders as a select')
 assert.match(html, /<option [^>]*value="none">none<\/option>/, 'select offers none')
 assert.match(html, /<option [^>]*value="high">high<\/option>/, 'select offers high')
 assert.match(html, /不写该字段/, 'select offers the omit option')
 assert.match(html, /title="根开关/, 'models label carries a dependency tooltip (root switch)')
 assert.match(html, /title="独立项/, 'independent fields state they are independent in the tooltip')
 assert.match(html, /title="「分片救援」组的总开关/, 'rescue switch tooltip names its dependent group')
-assert.equal(face.hooks.gatewayCard.getSnapshot().rescueOn, true, 'rescue on by default → chunking group live')
+assert.equal(face.hooks.qwen38Card.getSnapshot().rescueOn, true, 'rescue on by default → chunking group live')
 
 // Turn the rescue switch off: snapshot flips and the chunking rows dim.
 face.edit('chunkingEnabled', 'false')
-assert.equal(face.hooks.gatewayCard.getSnapshot().rescueOn, false, 'staged rescue-off flips the gate')
-html = renderCard()
+assert.equal(face.hooks.qwen38Card.getSnapshot().rescueOn, false, 'staged rescue-off flips the gate')
+html = renderFields()
 assert.match(html, /依赖「超大对话分片救援」开启——当前已停用/, 'rescue-off note appears in the chunking group')
 face.discard()
 
@@ -253,10 +230,10 @@ face.discard()
 // Edit + save: staged text becomes a set op with the nested path.
 // ---------------------------------------------------------------------------
 face.edit('maxTokensFloor', '32768')
-props = { t, useQwen38Card: (sel) => sel(face.hooks.gatewayCard.getSnapshot()) }
-html = renderCard()
+props = { t, useQwen38Card: (sel) => sel(face.hooks.qwen38Card.getSnapshot()) }
+html = renderFields()
 assert.match(html, /32768/, 'edited value renders before save')
-assert.match(html, /未保存/, 'dirty card carries the unsaved tag on its header')
+assert.match(html, /保存/, 'dirty page carries the save button')
 
 face.edit('chunkRatio', '0.9')
 await face.save()
@@ -274,8 +251,8 @@ assert.equal(mutateCalls[0].expectedRevision, 3)
 // Invalid number blocks the save.
 // ---------------------------------------------------------------------------
 face.edit('maxTokensFloor', 'abc')
-props = { t, useQwen38Card: (sel) => sel(face.hooks.gatewayCard.getSnapshot()) }
-html = renderCard()
+props = { t, useQwen38Card: (sel) => sel(face.hooks.qwen38Card.getSnapshot()) }
+html = renderFields()
 assert.match(html, /<button[^>]*>保存<\/button>/, 'save button present while dirty')
 await face.save()
 assert.equal(mutateCalls.length, 1, 'invalid field blocks the save')
@@ -283,24 +260,24 @@ assert.equal(mutateCalls.length, 1, 'invalid field blocks the save')
 // resetField stages an unset (the built-in CardForm semantics): the field shows the
 // base value, loses its override badge, and saving emits an unset op.
 face.resetField('maxTokensFloor')
-props = { t, useQwen38Card: (sel) => sel(face.hooks.gatewayCard.getSnapshot()) }
-html = renderCard()
+props = { t, useQwen38Card: (sel) => sel(face.hooks.qwen38Card.getSnapshot()) }
+html = renderFields()
 assert.match(html, /maxTokensFloor" value="16384"/, 'reset shows the base value')
 assert.ok(/<button[^>]*>保存<\/button>/.test(html), 'reset stages a pending unset (save appears)')
 await face.save()
-assert.equal(face.hooks.gatewayCard.getSnapshot().open, false, 'a settled save collapses the card')
+assert.equal(face.hooks.qwen38Card.getSnapshot().open, false, 'a settled save collapses the card')
 const resetOps = norm(mutateCalls.at(-1).ops)
 assert.deepEqual(resetOps, [{ op: 'unset', path: ['maxTokensFloor'] }], 'reset save emits an unset op')
 // The fake scope applied the unset: only the chunkRatio override badge remains.
-props = { t, useQwen38Card: (sel) => sel(face.hooks.gatewayCard.getSnapshot()) }
-html = renderCard()
+props = { t, useQwen38Card: (sel) => sel(face.hooks.qwen38Card.getSnapshot()) }
+html = renderFields()
 assert.equal((html.match(/已覆盖默认值/g) || []).length, 1, 'override badge count drops after unset')
 
 // discard drops all staged edits.
 face.edit('chunkRatio', '0.5')
 face.discard()
-props = { t, useQwen38Card: (sel) => sel(face.hooks.gatewayCard.getSnapshot()) }
-html = renderCard()
+props = { t, useQwen38Card: (sel) => sel(face.hooks.qwen38Card.getSnapshot()) }
+html = renderFields()
 assert.ok(!/<button[^>]*>保存<\/button>/.test(html), 'no save button after discard')
 
 // ---------------------------------------------------------------------------
@@ -348,7 +325,7 @@ assert.deepEqual(modelOps, [{ op: 'set', path: ['models'], value: ['NewModel-42'
 // must be visible on the page, and the displayed main prompt must stay a
 // faithful reference copy of the harness instruction.
 // ---------------------------------------------------------------------------
-const promptHtml = renderCard()
+const promptHtml = renderFields()
 assert.match(promptHtml, /压缩提示词\(只读展示\)/, 'prompt display section renders')
 assert.match(promptHtml, /dsh-compaction-basic/, 'main prompt names its source')
 assert.match(promptHtml, /You are now acting as a compaction engine/, 'main instruction text renders')

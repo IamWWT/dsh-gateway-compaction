@@ -409,6 +409,63 @@ console.log("manual compaction command:");
   apply(ctxOff, { command: { enabled: false } });
   check("command: compact disabled via config leaves only /clear-context", JSON.stringify(registeredDefsOff.map((d) => d.name)), JSON.stringify(["clear-context"]));
 }
+{
+  // v1.5.0: `matchAll` widens the wire layers to every model. Allow-listed
+  // models keep the full llama.cpp wire; unlisted models get the CONSERVATIVE
+  // wire (reasoning_effort only — never chat_template_kwargs, which OpenAI-
+  // compatible gateways reject; sampling/floor/tools-strip still apply).
+  const matchPolicy = { ...POLICY, matchAll: true };
+  const anyPolicy = { ...POLICY, models: [], matchAll: true };
+  {
+    const init = compactionInit("qwen3.8-max-0902");
+    check("matchAll: unlisted model is rewritten", rewriteCompactionBody(init, matchPolicy), true);
+    const body = JSON.parse(init.body);
+    check("  matchAll: no chat_template_kwargs for unlisted model", "chat_template_kwargs" in body, false);
+    check("  matchAll: reasoning_effort still written", body.reasoning_effort, "none");
+    check("  matchAll: sampling still applied", [body.temperature, body.top_p], [0.7, 0.8]);
+    check("  matchAll: max_tokens floor still applied", body.max_tokens, 16384);
+  }
+  {
+    const withTools = compactionInit("qwen3.8-max-0902");
+    const withToolsBody = JSON.parse(withTools.body);
+    withToolsBody.tools = [{ type: "function" }];
+    withToolsBody.tool_choice = "auto";
+    withTools.body = JSON.stringify(withToolsBody);
+    check("matchAll: tools/tool_choice stripped for unlisted model", [rewriteCompactionBody(withTools, matchPolicy), JSON.parse(withTools.body).tools, JSON.parse(withTools.body).tool_choice], [true, undefined, undefined]);
+  }
+  {
+    const init = compactionInit("qwen3.8-max-0902");
+    check("matchAll with empty models list still rewrites", rewriteCompactionBody(init, anyPolicy), true);
+    const body = JSON.parse(init.body);
+    check("  empty list + matchAll: no chat_template_kwargs", "chat_template_kwargs" in body, false);
+  }
+  {
+    const init = compactionInit("qwen3.8-max-0902");
+    check("no matchAll: unlisted model still untouched", rewriteCompactionBody(init, POLICY), false);
+  }
+  {
+    const init = compactionInit("qwen3.8-max-0902");
+    check("matchAll: missing model field untouched", rewriteCompactionBody({ body: JSON.stringify({ ...JSON.parse(init.body), model: undefined }) }, matchPolicy), false);
+  }
+  {
+    const init = titleInit("qwen3.8-max-0902");
+    check("matchAll: title call rewritten for unlisted model", rewriteTitleBody(init, matchPolicy), true);
+    const body = JSON.parse(init.body);
+    check("  matchAll title: no chat_template_kwargs", "chat_template_kwargs" in body, false);
+    check("  matchAll title: reasoning_effort written", body.reasoning_effort, "none");
+  }
+  {
+    const init = titleInit("qwen3.8-max-0902");
+    check("no matchAll: title call untouched for unlisted model", rewriteTitleBody(init, POLICY), false);
+  }
+  {
+    // Allow-listed models keep the full wire under matchAll (regression guard).
+    const init = compactionInit("Qwen3.8-27B-GGUF");
+    check("matchAll: allow-listed model keeps full wire", rewriteCompactionBody(init, matchPolicy), true);
+    const body = JSON.parse(init.body);
+    check("  matchAll: chat_template_kwargs still merged for listed model", body.chat_template_kwargs?.enable_thinking, false);
+  }
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

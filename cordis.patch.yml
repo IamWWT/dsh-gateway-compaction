@@ -16,6 +16,14 @@
         # A call/body whose model is not in this list passes through
         # untouched. Empty list disables the whole policy.
         models: [Qwen3.8-27B-GGUF, qwen3.8-27b]
+        # Apply the wire layers to EVERY model (not just `models` above):
+        # allow-listed models keep the full llama.cpp wire (chat_template_kwargs
+        # + reasoning_effort); models outside the allow-list get the
+        # CONSERVATIVE wire — reasoning_effort only, never chat_template_kwargs
+        # (OpenAI-compatible gateways such as goaichat reject that field with a
+        # 400). Sampling, the max_tokens floor and the tools/tool_choice strip
+        # apply to every model either way. `ninModels` is always honored.
+        matchAll: true
         # Sampling settings written verbatim into the compaction request body
         # (wire field names; accepted by both llama.cpp and NInfer). These are
         # Qwen3's recommended parameters for non-thinking mode. {} leaves

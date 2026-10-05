@@ -1,6 +1,38 @@
 # Changelog
 
-## Unreleased
+## 1.5.0 (2026-10-05)
+
+**取消模型白名单限制（`matchAll`）**：wire 层（关思考 + 非思考采样 + max_tokens 下限 + 去工具 +
+提示词优化）对所有模型的压缩/标题调用生效，不再只作用于 `models` 白名单。
+
+- 背景：`/gateway-compact` 在非白名单模型（如远端 OpenAI 兼容网关 goai-vision 的
+  `qwen3.8-max-0902`）上一直失败——调用不被改写 → 模型带着 thinking 输出 → 摘要无文本块 →
+  引擎报「模型没有产出可用的摘要,本次未生效」。会话上下文 98% 满仍无法压缩。
+- 新增配置 `matchAll`（默认 `false` 向后兼容；bundle patch 默认 `true` 直接生效）：
+  - 白名单内模型：完整 llama.cpp wire（`chat_template_kwargs` + `reasoning_effort`），行为不变；
+  - 白名单外模型：**保守 wire**——只写 `reasoning_effort`，**绝不写 `chat_template_kwargs`**
+    （OpenAI 兼容网关 400 拒绝该 llama.cpp 专用字段）；采样/下限/去工具照样生效；
+  - `models` 空列表 + `matchAll: true`：策略仍生效（不再视为整体停用）；
+  - `ninModels` 语义不变（始终 NInfer 式处理）。
+- 三条模型门禁同步放开：`rewriteCompactionBody` / `rewriteTitleBody`（fetch 改写）与
+  `llm/stream` reasoning-effort 盖章。
+- 设置页（`plugins.bundle.config` 卡片）新增「对全部模型生效」开关（中英文案 + 依赖提示）。
+- 测试：smoke +17 项 matchAll 断言（改写生效/保守字段/空列表+matchAll/无 matchAll 不动/
+  title 同步/白名单完整 wire 回归）；修复 `client-smoke.mjs` 存量过期断言
+  （0.1.7 起 `settings.plugin.item` 槽退役 → 单一 `plugins.bundle.config` 表面、
+  hooks 键 `gatewayCard`→`qwen38Card`、无折叠渲染、id 前缀 `-plugins-`）——此前该测试在
+  1.4.0 已坏，本次随改动对齐。
+
+## 1.4.0 (2026-09-29)
+
+**兼容 DSH `0.2.0-rc.1`**：`peerDependencies` 的 `@deepseek-ai/dsh-settings` 区间追加
+`|| >=0.2.0-0 <0.3.0-0`（npm semver 下 0.2.0-rc.x 不被仅含 0.1.x 下界的区间匹配；
+0.1.7→0.2.0 间 settings/llm API 无破坏性变更，纯范围修正，代码零改动，安装方式不变）。
+
+- 文档：README（中/英）新增「环境支持矩阵」节（`ubuntu-4090` 全量 / `windows-lite` 降级：无本地网关，指向远端 OpenAI 兼容端点时压缩机制与 `/clear-context` 可用）；安装章节改为现行 **tgz 流程**（`pnpm check` → `npm pack` → `dsh-dev plugin --profile web add <tgz>`，重打包必须升版本号）。
+- 修复 `client-smoke.mjs` 在 Windows 上把文件 URL 误作路径、导致盘符重复的问题；使用 `fileURLToPath` 转换后可跨平台运行。
+- 提示词源码校验按 JavaScript 模板字符串的运行时规则处理 CRLF，避免 Windows checkout 产生误报。
+
 
 - 文档：README（中/英）新增「环境支持矩阵」节（`ubuntu-4090` 全量 / `windows-lite` 降级：无本地网关，指向远端 OpenAI 兼容端点时压缩机制与 `/clear-context` 可用）；安装章节改为现行 **tgz 流程**（`pnpm check` → `npm pack` → `dsh-dev plugin --profile web add <tgz>`，重打包必须升版本号）。
 - 修复 `client-smoke.mjs` 在 Windows 上把文件 URL 误作路径、导致盘符重复的问题；使用 `fileURLToPath` 转换后可跨平台运行。
@@ -10,7 +42,7 @@
 
 - **代码准绳**：monorepo `IamWWT/dsh-plugins`（private）；本插件同时保留 public 独立仓 `IamWWT/dsh-gateway-compaction` 并单独同步更新（双轨）。原 16 个私有独立仓已于 2026-09-26 从 GitHub 删除。
 - **安装**：一律 tgz 安装（`pnpm check` → `npm pack` → `dsh-dev plugin --profile web add <tgz>`），无源码 link 安装；重打包必须升版本号。
-- **环境**：`ubuntu-4090` = 源码树 + systemd（3082/3083）；`windows-lite` = 源码树 + `dsh-dev` 手动启动（无 systemd），且因独显差**无本地网关**（降级见 README「环境支持矩阵」）。
+- **环境**：`ubuntu-4090` = 源码树 + systemd（3082/3083）；`windows-lite` = 官方桌面版（profile `desktop`，无 systemd），且因独显差**无本地网关**（降级见 README「环境支持矩阵」）。
 
 ## 1.3.1 (2026-09-24)
 

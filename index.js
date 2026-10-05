@@ -398,6 +398,19 @@ const Config = z.object({
    */
   models: z.array(z.string()).default(DEFAULT_MODELS).volatile(),
   /**
+   * Apply the wire layers to EVERY model, not just the `models` allow-list.
+   * `false` (default) keeps the allow-list behavior: models outside the list
+   * pass through untouched. When `true`, allow-listed models keep the full
+   * llama.cpp wire (chat_template_kwargs merge + reasoning_effort) and every
+   * other model gets the CONSERVATIVE wire (reasoning_effort only — never
+   * `chat_template_kwargs`, which OpenAI-compatible gateways reject with a
+   * 400; sampling entries, the max_tokens floor and the tools/tool_choice
+   * strip apply to them all the same). Model ids in `ninModels` are always
+   * handled NInfer-style regardless of this flag.
+   * Default `false`.
+   */
+  matchAll: z.boolean().default(false).volatile(),
+  /**
    * Exact model ids served by an **NInfer** gateway (case-sensitive, as
    * declared in settings.yaml). For these models the llama.cpp-specific
    * `chat_template_kwargs.enable_thinking` merge is skipped (NInfer rejects
@@ -644,6 +657,7 @@ function policyOf(config) {
   return {
     entries: samplingEntries(config?.sampling), floor, wireReasoning, enableThinkingOff,
     supplementOn, models, ninModels, chunking,
+    matchAll: config?.matchAll === true,
     autoCompaction: autoCompactionEngineConfig(config?.autoCompaction)
   };
 }
@@ -675,13 +689,18 @@ function messageText(content) {
 }
 
 /**
- * Whether the parsed body's `model` field is in the allow-list. Conservative:
- * a missing or non-string `model` never matches (no rewrite).
+ * Whether the parsed body's `model` field is in the allow-list. With
+ * `matchAll` every non-empty model id matches. Conservative: a missing,
+ * non-string or empty `model` never matches.
  * @param body - the parsed JSON chat-completion body.
  * @param models - the allow-list of exact model ids.
+ * @param matchAll - when true, allow-list is widened to every model id.
  * @returns true when the body targets an allowed model.
  */
-function modelAllowed(body, models) {
+function modelAllowed(body, models, matchAll) {
+  if (matchAll === true) {
+    return typeof body?.model === "string" && body.model.length > 0;
+  }
   return Array.isArray(models) && typeof body?.model === "string" && models.includes(body.model);
 }
 
@@ -695,21 +714,26 @@ function modelAllowed(body, models) {
  * Never touches any other field.
  * @param body - the parsed JSON chat-completion body (mutated in place).
  * @param policy - `{wireReasoning, enableThinkingOff, ninModels}` from the current config.
+ * @param extended - matchAll 扩展模型（不在 `models` 白名单内）:跳过 llama.cpp 专用
+ *   `chat_template_kwargs` 合并（OpenAI 兼容网关会 400 拒绝该字段），只写
+ *   `reasoning_effort`。白名单内模型保持原行为。
  * @returns true when at least one wire field was written.
  */
-export function applyThinkingOff(body, policy) {
+export function applyThinkingOff(body, policy, extended) {
   if (body === null || typeof body !== "object") return false;
   let changed = false;
   // NInfer gateways reject `chat_template_kwargs` outright (400
   // chat_template_option_not_supported) — it is a llama.cpp-only option. For
   // NInfer models thinking is switched off via `reasoning_effort` below; the
-  // chat_template_kwargs merge is llama.cpp-only.
+  // chat_template_kwargs merge is llama.cpp-only. The same conservative
+  // choice applies to matchAll-extended models (never assume a third-party
+  // gateway speaks llama.cpp's template kwargs).
   const ninSet = policy?.ninModels;
   const isNinModel =
     typeof ninSet === "object" && ninSet !== null && ninSet.has !== undefined
       ? ninSet.has(body.model)
       : false;
-  if (policy?.enableThinkingOff === true && !isNinModel) {
+  if (policy?.enableThinkingOff === true && !isNinModel && extended !== true) {
     const existing = body.chat_template_kwargs;
     const target = existing !== null && typeof existing === "object" && !Array.isArray(existing) ? existing : {};
     if (target.enable_thinking !== false) {
@@ -744,8 +768,9 @@ export function rewriteCompactionBody(init, policy) {
   const entries = Array.isArray(policy.entries) ? policy.entries : [];
   const floor = typeof policy.floor === "number" && Number.isFinite(policy.floor) && policy.floor > 0 ? policy.floor : 0;
   const models = Array.isArray(policy.models) ? policy.models : [];
+  const matchAll = policy.matchAll === true;
   if (entries.length === 0 && floor === 0 && !thinkingOffActive(policy) && policy.supplementOn !== true) return false;
-  if (models.length === 0) return false;
+  if (models.length === 0 && !matchAll) return false;
   if (init === null || typeof init !== "object") return false;
   if (typeof init.body !== "string" || init.body.length === 0) return false;
   // Cheap pre-filter before parsing a potentially large body.
@@ -758,7 +783,7 @@ export function rewriteCompactionBody(init, policy) {
   }
   if (body === null || typeof body !== "object") return false;
   // Model gate: only rewrite bodies targeting an allowed model.
-  if (!modelAllowed(body, models)) return false;
+  if (!modelAllowed(body, models, matchAll)) return false;
   if (!Array.isArray(body.messages) || body.messages.length === 0) return false;
   const last = body.messages[body.messages.length - 1];
   if (last === null || typeof last !== "object" || last.role !== "user") return false;
@@ -769,7 +794,7 @@ export function rewriteCompactionBody(init, policy) {
   // that merely quote the signature inside tool results or history.
   const text = messageText(last.content);
   if (!text.startsWith(COMPACTION_SIGNATURE)) return false;
-  let changed = applyThinkingOff(body, policy);
+  let changed = applyThinkingOff(body, policy, matchAll && !modelAllowed(body, models, false));
   for (const [key, value] of entries) {
     if (typeof key === "string" && typeof value === "number") {
       body[key] = value;
@@ -832,8 +857,9 @@ export function rewriteCompactionBody(init, policy) {
 export function rewriteTitleBody(init, policy) {
   if (policy === null || typeof policy !== "object") return false;
   const models = Array.isArray(policy.models) ? policy.models : [];
+  const matchAll = policy.matchAll === true;
   if (!thinkingOffActive(policy)) return false;
-  if (models.length === 0) return false;
+  if (models.length === 0 && !matchAll) return false;
   if (init === null || typeof init !== "object") return false;
   if (typeof init.body !== "string" || init.body.length === 0) return false;
   // Cheap pre-filter before parsing the body.
@@ -846,7 +872,7 @@ export function rewriteTitleBody(init, policy) {
   }
   if (body === null || typeof body !== "object") return false;
   // Model gate: only rewrite bodies targeting an allowed model.
-  if (!modelAllowed(body, models)) return false;
+  if (!modelAllowed(body, models, matchAll)) return false;
   if (!Array.isArray(body.messages) || body.messages.length === 0) return false;
   // Confirm the signature actually sits in the TITLE PROMPT itself: the title
   // provider sends it as the system prompt (adapter-mapped role, e.g.
@@ -862,7 +888,7 @@ export function rewriteTitleBody(init, policy) {
     if (messageText(message.content).startsWith(TITLE_SIGNATURE)) { matched = true; break; }
   }
   if (!matched) return false;
-  let changed = applyThinkingOff(body, policy);
+  let changed = applyThinkingOff(body, policy, matchAll && !modelAllowed(body, models, false));
   // Same tool-call trap as the compaction call: a thinking-off request that
   // carries tool schemas can come back as a tool call with no title text.
   if ("tools" in body || "tool_choice" in body) {
@@ -2416,9 +2442,11 @@ function apply(ctx, config = {}) {
     if (options === null || typeof options !== "object" || typeof options.purpose !== "string") return next();
     const purposes = Array.isArray(cfg.purposes) && cfg.purposes.length > 0 ? cfg.purposes : DEFAULT_PURPOSES;
     if (!purposes.includes(options.purpose)) return next();
-    // Model gate: only stamp calls targeting an allowed model.
-    const models = Array.isArray(cfg.models) ? cfg.models : DEFAULT_MODELS;
-    if (!models.includes(options.model)) return next();
+    // Model gate: only stamp calls targeting an allowed model — unless
+    // `matchAll` widens the policy to every model.
+    const matchAll = cfg?.matchAll === true;
+    const models = Array.isArray(cfg.models) && cfg.models.length > 0 ? cfg.models : DEFAULT_MODELS;
+    if (!matchAll && !models.includes(options.model)) return next();
     // An explicit per-call effort always wins over the plugin default.
     if (options.reasoningEffort !== undefined) return next();
     // A lazy async generator (not a promise): every llm/stream stage and

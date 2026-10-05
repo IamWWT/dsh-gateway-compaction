@@ -8,8 +8,8 @@
 | 项 | 值 |
 |---|---|
 | 文档性质 | 进度真源 / 操作与状态记录 |
-| 对应版本 | **1.3.1**（以 `package.json` 为准） |
-| 状态 | 功能完成并已装到 3082（`~/.dsh-dev`, profile `web`）；**待用户重启验收**（见「未闭环」） |
+| 对应版本 | **1.5.0**（以 `package.json` 为准） |
+| 状态 | 功能完成；**1.5.0 已装 desktop**（Windows profile `desktop`）**待重启验收**（`/gateway-compact` 全模型生效）；Ubuntu 3082 待重装 |
 | 维护者 | 本插件开发者（monorepo `dsh-plugins/dsh-gateway-compaction/`） |
 
 ## 一句话定位
@@ -94,3 +94,15 @@ Qwen3.8 本地网关（llama.cpp / NInfer）上的会话压缩修复插件：tgz
   `/clear-context` 不变；适用面由「仅 minimal」泛化到所有未挂内置压缩引擎的 preset。
 - **1.3.1**：docs 对齐审计（README 中/英环境支持矩阵、tgz 安装章节、`minimalContext` 注释、
   仓库归属与双轨说明），只改 `*.md`，未动代码。
+- **1.4.0**：兼容 DSH `0.2.0-rc.1`（`dsh-settings` peer 区间追加 0.2.x 分支，纯范围修正）。
+- **1.5.0（2026-10-05）**：取消模型白名单限制 —— 新增 `matchAll`（bundle patch 默认 `true`），
+  wire 层对**所有模型**的压缩/标题调用生效：
+  - 背景：desktop（goai-vision / `qwen3.8-max-0902`）上 `/gateway-compact` 一直失败——
+    模型不在白名单 → 调用不被改写 → thinking 输出占满 → 摘要无文本块 → 引擎报
+    「模型没有产出可用的摘要」。会话上下文 257K/262K ≈ 98% 满仍无法压缩。
+  - 白名单外模型走**保守 wire**（只写 `reasoning_effort`，不写 `chat_template_kwargs`——
+    OpenAI 兼容网关会 400）；采样/max_tokens 下限/去工具全部生效；`ninModels` 语义不变。
+  - 修复 `client-smoke.mjs` 存量过期断言（0.1.7 槽退役 → 单表面；hooks 键 qwen38Card；
+    无折叠渲染；id 前缀 -plugins-）——1.4.0 起该测试已坏，随本次对齐。
+  - **已打包 1.5.0 装 desktop（待重启验收：obisdian 会话 /gateway-compact 成功压缩）**。
+  - 下一步：Ubuntu 3082（profile web）重装 1.5.0；public 仓同步已做/待做。

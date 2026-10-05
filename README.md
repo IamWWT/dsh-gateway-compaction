@@ -22,10 +22,13 @@
 - 提示词与控制台卡片：压缩提示词只读不可编辑；客户端设置卡片在 1.3.1 完成 harness 0.1.7 原生适配
   （插件行 `Config` 字段全部 `.volatile()`；客户端由退役的 `settingsScope` 改为经 `ctx.configForms`）。
 - **适用模型**：`Qwen3.8-27B-GGUF`（llama.cpp/Unsloth id）与 `qwen3.8-27b`（NInfer id，需同时填入 `ninModels`）；
-  压缩机制本身与模型无关，把目标模型 id 加入 `models` 即可复用；不适用非 OpenAI 兼容网关与关思考开关不同的模型族。
+  1.5.0 起 `matchAll: true`（bundle patch 默认开启）让 wire 层对**所有模型**生效：白名单内模型走完整
+  llama.cpp wire（含 `chat_template_kwargs`），白名单外模型（如远端 OpenAI 兼容网关）走保守 wire——
+  只写 `reasoning_effort`、绝不写 `chat_template_kwargs`（该 llama.cpp 专用字段会被 OpenAI 兼容网关
+  400 拒绝），采样/下限/去工具对全部模型生效。
 - **服务端硬限制**（当前目标 NInfer 配置）：窗口 378144 / 默认最大输出 192000 / 安全余量 18908 → 最大输入 **167236** tokens，
   超出直接返回 `context_length_exceeded`，客户端必须在发请求前按同一预算计算压力。
-- 主要配置键（`$DSH_HOME/settings.yaml`，段名 `gateway-compaction`）：`models`、`ninModels`、`maxTokensFloor`、
+- 主要配置键（`$DSH_HOME/settings.yaml`，段名 `gateway-compaction`）：`matchAll`、`models`、`ninModels`、`maxTokensFloor`、
   `wireReasoning`、`enableThinkingOff`、`chunking.contextWindows/chunkRatio/chunkMaxTokens/mergeMaxTokens/maxChunks`、
   `command.enabled/newContext.enabled`、`autoCompaction.{enabled,thresholdRatio,retainRatio|retainTokens,maxTokens,compactionRetries,maxOverflowRetries}`。
 - **命名沿革**：原 `dsh-qwen38-gateway-compaction`，2026-09-19 起改名 `dsh-gateway-compaction`；
@@ -43,7 +46,7 @@ DSH_HOME=$HOME/.dsh-dev pnpm dsh plugin --profile web add \
 ```
 
 - **重打包必须升版本号**：同版本重打包时 pnpm 按 lockfile `integrity` 判「已最新」不重解压，会残留旧布局。
-- `ubuntu-4090` 安装/升级后 `systemctl --user restart dsh-dev-web`（需用户同意）；`windows-lite` 手动重启 `dsh-dev` 实例。
+- `ubuntu-4090` 安装/升级后 `systemctl --user restart dsh-dev-web`（需用户同意）；`windows-lite` 托盘退出后重开桌面应用。
 - 卸载：`pnpm dsh plugin --profile web rm dsh-gateway-compaction`。
 
 ## 构建与验证
