@@ -246,11 +246,14 @@ const DEFAULT_MODELS = ["Qwen3.8-27B-GGUF"];
 const DEFAULT_WIRE_REASONING = "none";
 /**
  * Default `max_tokens` floor for compaction bodies. dsh-compaction-basic's
- * own budget defaults to 8192; 16384 gives the summary headroom while staying
- * far below the headroom a 250k-token window leaves a large prompt. `0` (or
- * `null`) disables the floor.
+ * own budget defaults to 8192. v1.5.1 raises the default to 32768: a
+ * full-window conversation's checkpoint can exceed 16k tokens once thinking
+ * and tool payloads are slimmed but the surviving conversation text is still
+ * dense — the harness errors with "summarization truncated at the token cap"
+ * when the output cap cuts the checkpoint mid-way. `0` (or `null`) disables
+ * the floor.
  */
-const DEFAULT_MAX_TOKENS_FLOOR = 16384;
+const DEFAULT_MAX_TOKENS_FLOOR = 32768;
 /** Default: the oversized-compaction rescue is on. */
 const DEFAULT_CHUNKING_ENABLED = true;
 /**
@@ -410,6 +413,19 @@ const Config = z.object({
    * Default `false`.
    */
   matchAll: z.boolean().default(false).volatile(),
+  /**
+   * Rule-based conversation slimming applied to compaction/title calls when
+   * the session is severely over budget: DROP every `reasoning` block and
+   * every `tool-call` block from the request messages before the model
+   * summarizes, so the surviving checkpoint has to cover the actual
+   * conversation text instead of thinking traces and tool payloads (which in
+   * a long session dominate the token count). The final instruction message
+   * and system messages are preserved; a message whose content empties out is
+   * dropped. Only affects the auxiliary calls the policy already gates —
+   * normal conversation requests are untouched.
+   * Default `false`.
+   */
+  slimOversized: z.boolean().default(false).volatile(),
   /**
    * Exact model ids served by an **NInfer** gateway (case-sensitive, as
    * declared in settings.yaml). For these models the llama.cpp-specific
@@ -658,6 +674,7 @@ function policyOf(config) {
     entries: samplingEntries(config?.sampling), floor, wireReasoning, enableThinkingOff,
     supplementOn, models, ninModels, chunking,
     matchAll: config?.matchAll === true,
+    slimOversized: config?.slimOversized === true,
     autoCompaction: autoCompactionEngineConfig(config?.autoCompaction)
   };
 }
@@ -733,13 +750,23 @@ export function applyThinkingOff(body, policy, extended) {
     typeof ninSet === "object" && ninSet !== null && ninSet.has !== undefined
       ? ninSet.has(body.model)
       : false;
-  if (policy?.enableThinkingOff === true && !isNinModel && extended !== true) {
-    const existing = body.chat_template_kwargs;
-    const target = existing !== null && typeof existing === "object" && !Array.isArray(existing) ? existing : {};
-    if (target.enable_thinking !== false) {
-      target.enable_thinking = false;
-      body.chat_template_kwargs = target;
-      changed = true;
+  if (policy?.enableThinkingOff === true && !isNinModel) {
+    if (extended === true) {
+      // 保守 wire（matchAll 扩展模型）：不写 llama.cpp 专用
+      // `chat_template_kwargs`（OpenAI 兼容网关会 400 拒绝），改写官方顶层
+      // `enable_thinking` 字段（qwen/deepseek OpenAI 兼容 API 均接受）。
+      if (body.enable_thinking !== false) {
+        body.enable_thinking = false;
+        changed = true;
+      }
+    } else {
+      const existing = body.chat_template_kwargs;
+      const target = existing !== null && typeof existing === "object" && !Array.isArray(existing) ? existing : {};
+      if (target.enable_thinking !== false) {
+        target.enable_thinking = false;
+        body.chat_template_kwargs = target;
+        changed = true;
+      }
     }
   }
   const wire = typeof policy?.wireReasoning === "string" ? policy.wireReasoning : "";
@@ -748,6 +775,71 @@ export function applyThinkingOff(body, policy, extended) {
     changed = true;
   }
   return changed;
+}
+
+/**
+ * Rule-based conversation slimming for a compaction call (see
+ * `slimOversized`), borrowing the tiered keep/drop idea from AgentScope's
+ * tool-selection strategies (always-include essentials, drop the payload):
+ *
+ *   - `text` blocks: KEEP — the conversation body the checkpoint must cover.
+ *   - `reasoning` blocks: DROP — internal model traces, not conversation
+ *     facts; they are a large share of a long session's tokens and the
+ *     checkpoint has no use for them.
+ *   - `tool-call` blocks: DEGRADE to a one-line `[tool-call: <name>]` text
+ *     marker — KEEP the "what was invoked" outline (the checkpoint still
+ *     records which tools the work used) but DROP the `arguments` payload,
+ *     which dominates tokens and carries no result: tool results travel in
+ *     the separate `toolHistory` channel the engine keeps, not in the
+ *     messages array.
+ *   - A message whose content empties out is dropped entirely; system
+ *     messages and the final instruction message (text blocks) survive.
+ *
+ * Returns the ORIGINAL array when nothing changed (so callers can compare
+ * references). If every message were dropped, the caller's later shape
+ * checks fail and the request is left untouched — conservative.
+ */
+function slimConversationForCompaction(messages) {
+  if (!Array.isArray(messages)) return messages;
+  let changed = false;
+  const kept = [];
+  for (const msg of messages) {
+    if (msg === null || typeof msg !== "object") {
+      kept.push(msg);
+      continue;
+    }
+    if (Array.isArray(msg.content)) {
+      const out = [];
+      let msgChanged = false;
+      for (const b of msg.content) {
+        if (b === null || typeof b !== "object") {
+          out.push(b);
+          continue;
+        }
+        if (b.type === "reasoning") {
+          changed = true;
+          msgChanged = true;
+          continue;
+        }
+        if (b.type === "tool-call") {
+          changed = true;
+          msgChanged = true;
+          out.push({ type: "text", text: `[tool-call: ${typeof b.name === "string" ? b.name : "?"}]` });
+          continue;
+        }
+        out.push(b);
+      }
+      if (msgChanged) {
+        if (out.length === 0) continue; // emptied → drop the message
+        kept.push({ ...msg, content: out });
+        continue;
+      }
+      kept.push(msg);
+      continue;
+    }
+    kept.push(msg);
+  }
+  return changed ? kept : messages;
 }
 
 /**
@@ -795,6 +887,15 @@ export function rewriteCompactionBody(init, policy) {
   const text = messageText(last.content);
   if (!text.startsWith(COMPACTION_SIGNATURE)) return false;
   let changed = applyThinkingOff(body, policy, matchAll && !modelAllowed(body, models, false));
+  if (policy.slimOversized === true) {
+    // Rule-based conversation slimming: drop reasoning traces, degrade
+    // tool-call blocks to name markers, drop emptied messages.
+    const slimmed = slimConversationForCompaction(body.messages);
+    if (slimmed !== body.messages) {
+      body.messages = slimmed;
+      changed = true;
+    }
+  }
   for (const [key, value] of entries) {
     if (typeof key === "string" && typeof value === "number") {
       body[key] = value;

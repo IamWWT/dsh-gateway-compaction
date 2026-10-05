@@ -24,11 +24,14 @@
 - **适用模型**：`Qwen3.8-27B-GGUF`（llama.cpp/Unsloth id）与 `qwen3.8-27b`（NInfer id，需同时填入 `ninModels`）；
   1.5.0 起 `matchAll: true`（bundle patch 默认开启）让 wire 层对**所有模型**生效：白名单内模型走完整
   llama.cpp wire（含 `chat_template_kwargs`），白名单外模型（如远端 OpenAI 兼容网关）走保守 wire——
-  只写 `reasoning_effort`、绝不写 `chat_template_kwargs`（该 llama.cpp 专用字段会被 OpenAI 兼容网关
+  `reasoning_effort` + 顶层 `enable_thinking:false`、不写 `chat_template_kwargs`（该 llama.cpp 专用字段会被 OpenAI 兼容网关
   400 拒绝），采样/下限/去工具对全部模型生效。
+  1.5.1 起 `slimOversized: true`（patch 默认）：超满会话压缩前**规则瘦身**——丢思考块、工具调用
+  降级为一行标记（结果走引擎 `toolHistory` 通道），`maxTokensFloor` 默认提到 32768，解决
+  「summarization truncated at the token cap」。
 - **服务端硬限制**（当前目标 NInfer 配置）：窗口 378144 / 默认最大输出 192000 / 安全余量 18908 → 最大输入 **167236** tokens，
   超出直接返回 `context_length_exceeded`，客户端必须在发请求前按同一预算计算压力。
-- 主要配置键（`$DSH_HOME/settings.yaml`，段名 `gateway-compaction`）：`matchAll`、`models`、`ninModels`、`maxTokensFloor`、
+- 主要配置键（`$DSH_HOME/settings.yaml`，段名 `gateway-compaction`）：`matchAll`、`slimOversized`、`models`、`ninModels`、`maxTokensFloor`、
   `wireReasoning`、`enableThinkingOff`、`chunking.contextWindows/chunkRatio/chunkMaxTokens/mergeMaxTokens/maxChunks`、
   `command.enabled/newContext.enabled`、`autoCompaction.{enabled,thresholdRatio,retainRatio|retainTokens,maxTokens,compactionRetries,maxOverflowRetries}`。
 - **命名沿革**：原 `dsh-qwen38-gateway-compaction`，2026-09-19 起改名 `dsh-gateway-compaction`；

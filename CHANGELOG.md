@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.5.1 (2026-10-05)
+
+**修复「摘要被输出上限截断」**：1.5.0 重启后 wire 已生效（失败从「无文本摘要」变为
+`summarization truncated at the token cap (incomplete checkpoint)`——模型在写 checkpoint 但
+16k 输出上限不够，21MB 会话的摘要被截断）。v1.5.1 从输入与输出双侧解决：
+
+- **`slimOversized`（超满会话压缩前规则瘦身，设置页新增开关，patch 默认开）**：
+  - `reasoning` 块（思考痕迹）**全部丢弃**——非会话事实、长会话 token 大头之一；
+  - `tool-call` 块**降级为一行 `[tool-call: 工具名]` 标记**——保留「做了什么」的动作轮廓，
+    丢弃 `arguments` 负载（工具结果走引擎独立 `toolHistory` 通道，不受影响）；
+  - 清空的消息整体删除；system 与压缩指令消息保留。仅影响压缩调用，正常对话不受影响。
+  - 保留/丢弃分层参考 AgentScope 工具选择策略（always-include 保留信息、弃负载）：
+    text=保留（checkpoint 素材）、reasoning=丢弃（内部痕迹）、tool-call=降级（动作信号保留、
+    参数纯负载）。
+- **`maxTokensFloor` 默认 16384 → 32768**（patch 同步）：充分窗口会话的 checkpoint 可超
+  16k，输出上限截断直接导致上述错误。
+- **保守 wire 补顶层 `enable_thinking: false`**：matchAll 扩展模型（OpenAI 兼容网关如
+  goai）除 `reasoning_effort` 外再写 qwen 官方顶层字段，双保险关思考；白名单完整 wire 不变。
+- 实证：解压该超满会话日志（6.5MB zstd）确认 `reasoning` 582 块 + `tool-call` 1182 块
+  （arguments 为负载主体），全量瘦身后 checkpoint 将大幅缩小。
+- 测试：smoke +16（slim 12：reasoning 全删/tool-call 降级/text/system/指令保留/空消息删/
+  关闭时不动/白名单共存；extended 顶层 enable_thinking；floor 32768 入断言），
+  smoke 88 全绿 + client-smoke + window-resolution + prompt-sync + preset-applicability + auto-rescue。
+
 ## 1.5.0 (2026-10-05)
 
 **取消模型白名单限制（`matchAll`）**：wire 层（关思考 + 非思考采样 + max_tokens 下限 + 去工具 +

@@ -52,6 +52,9 @@ window.__ModuleLoader__.load({
 				matchAllLabel: '对全部模型生效',
 				matchAllHint: '开启:除「适用模型 ID」外,所有模型的压缩/标题调用同样套用本策略(采样、max_tokens 下限、去工具)。列表外模型不会收到 chat_template_kwargs(OpenAI 兼容网关会 400 拒绝),只写 reasoning_effort。',
 				tipMatchAll: '适合多网关混用(本地 llama.cpp + 云端 OpenAI 兼容)。列表内模型 = 完整 wire(含 chat_template_kwargs);列表外 = 保守 wire(仅 reasoning_effort + 采样/下限/去工具)。关闭 = 仅对列表内模型生效(旧行为)。',
+				slimOversizedLabel: '超满会话压缩前规则瘦身',
+				slimOversizedHint: '开启:压缩时先把思考块全部丢弃、工具调用降级为一行 `[tool-call: 工具名]` 标记(工具执行结果走引擎独立通道,不受影响),再交给模型总结——超长会话的 token 大头(思考痕迹+工具参数)被规则砍掉,checkpoint 才能装进输出上限。仅影响压缩调用,正常对话不受影响。',
+				tipSlimOversized: '解决「summarization truncated at the token cap(摘要被截断)」。参考 AgentScope 工具瘦身:保留信息(对话文本/工具动作轮廓)、丢弃负载(思考/参数)。',
 				windowsTitle: '上下文窗口(tokens)——每个模型一行',
 				windowsHint: '该模型网关实际运行的上下文窗口(llama.cpp: -c;NInfer: n_ctx)。只影响“何时分片”:设小=更早分片(慢一点),设大=可能单次溢出(安全回退)。留空则自动解析:先查网关 /v1/models,再查 dsh 模型配置(settings.yaml 中该模型的 contextWindow);两者都查不到才需要手填。',
 				enableThinkingOffLabel: '压缩/标题调用关闭思考',
@@ -135,6 +138,9 @@ window.__ModuleLoader__.load({
 				matchAllLabel: 'Apply to every model',
 				matchAllHint: 'On: compaction/title calls of every model (not only the ids above) get the policy too — sampling, max_tokens floor and the tools strip. Models outside the list never receive chat_template_kwargs (OpenAI-compatible gateways 400 it); they only get reasoning_effort.',
 				tipMatchAll: 'For mixed gateways (local llama.cpp + cloud OpenAI-compatible). Listed models keep the full wire (incl. chat_template_kwargs); unlisted ones get the conservative wire (reasoning_effort + sampling/floor/tools-strip). Off = allow-list only (legacy behavior).',
+				slimOversizedLabel: 'Rule-based slimming before compacting overfull sessions',
+				slimOversizedHint: 'On: before summarization, DROP every reasoning block and DEGRADE every tool-call block to a one-line `[tool-call: name]` marker (tool results travel in the engine\u2019s separate toolHistory channel, untouched) — the token-dominant load of a long session (thinking traces + tool payloads) is cut by rule so the checkpoint fits the output cap. Only affects compaction calls; normal conversation is untouched.',
+				tipSlimOversized: 'Fixes "summarization truncated at the token cap". Borrows AgentScope\u2019s tool-slimming tiers: keep the informative (conversation text, tool-action outline), drop the load (thinking, arguments).',
 				windowsTitle: 'Context window (tokens) — one row per model',
 				windowsHint: 'The context window the gateway actually runs for that model (llama.cpp: -c; NInfer: its n_ctx). Only affects WHEN chunking kicks in: smaller = earlier chunking (slower), larger = possible single-call overflow (safe fallback). Leave a model blank and the plugin resolves it automatically: live /v1/models probe first, then the declaration in your dsh model config (settings.yaml contextWindow); only fill it in manually if both are missing.',
 				enableThinkingOffLabel: 'Disable thinking on compaction/title calls',
@@ -328,6 +334,9 @@ Merging rules:
 			},
 			{
 				id: 'matchAll', path: () => ['matchAll'], labelKey: 'matchAllLabel', hintKey: 'matchAllHint', tipKey: 'tipMatchAll', bool: true,
+			},
+			{
+				id: 'slimOversized', path: () => ['slimOversized'], labelKey: 'slimOversizedLabel', hintKey: 'slimOversizedHint', tipKey: 'tipSlimOversized', bool: true,
 			},
 			{
 				id: 'enableThinkingOff', path: () => ['enableThinkingOff'], labelKey: 'enableThinkingOffLabel', hintKey: 'enableThinkingOffHint', tipKey: 'tipEnableThinkingOff', bool: true,

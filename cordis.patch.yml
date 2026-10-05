@@ -37,8 +37,21 @@
           repetition_penalty: 1.0
         # Raise the wire max_tokens of compaction bodies to at least this
         # value (never lowers it) so the summarizer keeps its output budget
-        # when pi-ai's client-side context clamp collapses it. 0 disables.
-        maxTokensFloor: 16384
+        # when pi-ai's client-side context clamp collapses it. v1.5.1: 32768 —
+        # a full-window conversation's checkpoint can exceed 16k once the
+        # wire's thinking-off + slimming are in, and the harness errors with
+        # "summarization truncated at the token cap" when the output cap cuts
+        # the checkpoint mid-way. 0 disables.
+        maxTokensFloor: 32768
+        # Rule-based conversation slimming for compaction calls (v1.5.1):
+        # DROP every `reasoning` block and DEGRADE every `tool-call` block to
+        # a one-line `[tool-call: <name>]` marker (tool results travel in the
+        # engine's separate toolHistory channel, so the arguments payload is
+        # pure load). Keeps text/system/instruction messages. Only affects
+        # compaction calls the policy already gates; normal conversation is
+        # untouched. Off by default in the schema; enabled here so the
+        # severely-over-budget session compresses instead of failing.
+        slimOversized: true
         # Models in `models` that are served by an NInfer gateway
         # (ninfer-serve). NInfer rejects `chat_template_kwargs` with a 400,
         # so for these ids the llama.cpp `enable_thinking` merge is skipped

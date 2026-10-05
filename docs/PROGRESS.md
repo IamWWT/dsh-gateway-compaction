@@ -8,8 +8,8 @@
 | 项 | 值 |
 |---|---|
 | 文档性质 | 进度真源 / 操作与状态记录 |
-| 对应版本 | **1.5.0**（以 `package.json` 为准） |
-| 状态 | 功能完成；**1.5.0 已装 desktop**（Windows profile `desktop`）**待重启验收**（`/gateway-compact` 全模型生效）；Ubuntu 3082 待重装 |
+| 对应版本 | **1.5.1**（以 `package.json` 为准） |
+| 状态 | 功能完成；**1.5.1 已装 desktop**（Windows profile `desktop`）**待重启验收**（obisdian 会话 `/gateway-compact` 成功压缩）；Ubuntu 3082 待重装 |
 | 维护者 | 本插件开发者（monorepo `dsh-plugins/dsh-gateway-compaction/`） |
 
 ## 一句话定位
@@ -106,3 +106,13 @@ Qwen3.8 本地网关（llama.cpp / NInfer）上的会话压缩修复插件：tgz
     无折叠渲染；id 前缀 -plugins-）——1.4.0 起该测试已坏，随本次对齐。
   - **已打包 1.5.0 装 desktop（待重启验收：obisdian 会话 /gateway-compact 成功压缩）**。
   - 下一步：Ubuntu 3082（profile web）重装 1.5.0；public 仓同步已做/待做。
+- **1.5.1（2026-10-05）**：修复「摘要被输出上限截断」（1.5.0 重启后实证：失败从
+  「无文本摘要」变为 `summarization truncated at the token cap`——wire 已生效、模型在写
+  checkpoint、但 16k 上限不够；解压会话日志确认 reasoning 582 块 + tool-call 1182 块）：
+  - 新增 `slimOversized`（patch 默认开，设置页开关）：压缩前规则瘦身——`reasoning` 全丢、
+    `tool-call` 降级为 `[tool-call: 名]` 一行标记（结果走引擎 toolHistory 通道不受影响）、
+    空消息删；保留/丢弃分层参考 AgentScope 工具选择策略（留信息、弃负载）。
+  - `maxTokensFloor` 默认 16384 → 32768（patch 同步）。
+  - 保守 wire 补顶层 `enable_thinking: false`（OpenAI 兼容官方字段，双保险关思考）。
+  - smoke 88 全绿（+16：slim 12 / extended 顶层字段 / floor）；client-smoke 全过。
+  - **已打包 1.5.1 装 desktop（待重启验收）**；public 仓待同步。

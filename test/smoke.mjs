@@ -44,7 +44,7 @@ const POLICY = {
     ["presence_penalty", 1.5],
     ["repetition_penalty", 1.0]
   ],
-  floor: 16384,
+  floor: 32768,
   wireReasoning: "none",
   enableThinkingOff: true,
   models: ["Qwen3.8-27B-GGUF"],
@@ -88,7 +88,7 @@ console.log("compaction gate:");
   check("  enable_thinking merged", body.chat_template_kwargs?.enable_thinking, false);
   check("  reasoning_effort written", body.reasoning_effort, "none");
   check("  sampling applied", [body.temperature, body.top_p, body.top_k, body.min_p, body.presence_penalty, body.repetition_penalty], [0.7, 0.8, 20, 0.0, 1.5, 1.0]);
-  check("  max_tokens raised to floor", body.max_tokens, 16384);
+  check("  max_tokens raised to floor", body.max_tokens, 32768);
 
   const init2 = compactionInit("gpt-4.1");
   check("disallowed model untouched", [rewriteCompactionBody(init2, POLICY), init2.body.length > 0 && !init2.body.includes("enable_thinking")], [false, true]);
@@ -111,7 +111,7 @@ console.log("compaction gate:");
 
   const onlySampling = { ...POLICY, wireReasoning: "", enableThinkingOff: false };
   const samplingOnly = compactionInit("Qwen3.8-27B-GGUF");
-  check("sampling/floor still apply when thinking-off gates are off", [rewriteCompactionBody(samplingOnly, onlySampling), JSON.parse(samplingOnly.body).temperature, JSON.parse(samplingOnly.body).max_tokens, "chat_template_kwargs" in JSON.parse(samplingOnly.body)], [true, 0.7, 16384, false]);
+  check("sampling/floor still apply when thinking-off gates are off", [rewriteCompactionBody(samplingOnly, onlySampling), JSON.parse(samplingOnly.body).temperature, JSON.parse(samplingOnly.body).max_tokens, "chat_template_kwargs" in JSON.parse(samplingOnly.body)], [true, 0.7, 32768, false]);
 }
 console.log("tool stripping (Qwen3 + llama.cpp tool-call trap):");
 {
@@ -231,7 +231,7 @@ console.log("settings wiring:");
   ctxNew.on = (ev, fn) => { listeners[ev] = fn; };
   apply(ctxNew, { models: ["Qwen3.8-27B-GGUF"] });
   check("new API: installSection called with the namespace", newApiCall?.ns, "gateway-compaction");
-  check("new API: entry is schema-resolved (defaults filled)", [newApiCall?.entry?.effort, newApiCall?.entry?.maxTokensFloor, newApiCall?.entry?.chunking?.enabled], ["off", 16384, true]);
+  check("new API: entry is schema-resolved (defaults filled)", [newApiCall?.entry?.effort, newApiCall?.entry?.maxTokensFloor, newApiCall?.entry?.chunking?.enabled], ["off", 32768, true]);
   // setSource from the settings scope must re-point the live policy: after
   // switching the allow-list away, a previously-allowed model passes through
   // untouched (synchronous next) instead of entering the effort gate.
@@ -422,8 +422,9 @@ console.log("manual compaction command:");
     const body = JSON.parse(init.body);
     check("  matchAll: no chat_template_kwargs for unlisted model", "chat_template_kwargs" in body, false);
     check("  matchAll: reasoning_effort still written", body.reasoning_effort, "none");
+    check("  matchAll: top-level enable_thinking written (extended wire)", body.enable_thinking, false);
     check("  matchAll: sampling still applied", [body.temperature, body.top_p], [0.7, 0.8]);
-    check("  matchAll: max_tokens floor still applied", body.max_tokens, 16384);
+    check("  matchAll: max_tokens floor still applied", body.max_tokens, 32768);
   }
   {
     const withTools = compactionInit("qwen3.8-max-0902");
@@ -464,6 +465,62 @@ console.log("manual compaction command:");
     check("matchAll: allow-listed model keeps full wire", rewriteCompactionBody(init, matchPolicy), true);
     const body = JSON.parse(init.body);
     check("  matchAll: chat_template_kwargs still merged for listed model", body.chat_template_kwargs?.enable_thinking, false);
+  }
+}
+{
+  // v1.5.1: slimOversized rule-based slimming — drop reasoning traces,
+  // degrade tool-call blocks to name markers, drop emptied messages, keep
+  // text/system/instruction. Default (off) leaves messages untouched.
+  function slimInit(model, extraMessages = []) {
+    const init = compactionInit(model);
+    const body = JSON.parse(init.body);
+    body.messages = [
+      { role: "system", content: "You are a coding assistant." },
+      ...extraMessages,
+      ...(body.messages.length > 2 ? body.messages.slice(1, -1) : []),
+      body.messages[body.messages.length - 1]
+    ];
+    init.body = JSON.stringify(body);
+    return init;
+  }
+  const convoInitial = [
+    { role: "user", content: "fix the bug" },
+    { role: "assistant", content: [{ type: "text", text: "checking" }, { type: "reasoning", text: "thinking…" }, { type: "tool-call", id: "c1", name: "glob", arguments: "{\"pattern\":\"**/*\"}" }] },
+    { role: "user", content: [{ type: "tool-call", id: "c2", name: "write", arguments: "{\"path\":\"big.json\",\"content\":\"HUNDRED_KB_PAYLOAD\"}" }] },
+    { role: "assistant", content: [{ type: "reasoning", text: "more thinking" }] }
+  ];
+  {
+    const slimPolicy = { ...POLICY, slimOversized: true, models: [...POLICY.models, "qwen3.8-max-0902"] };
+    const init = slimInit("qwen3.8-max-0902", convoInitial);
+    check("slim: compaction rewritten with slimming on", rewriteCompactionBody(init, slimPolicy), true);
+    const msgs = JSON.parse(init.body).messages;
+    const allBlocks = msgs.flatMap((m) => Array.isArray(m.content) ? m.content : [{ type: "text", text: String(m.content) }]);
+    check("slim: no reasoning blocks survive", allBlocks.some((b) => b.type === "reasoning"), false);
+    check("slim: no raw tool-call blocks survive", allBlocks.some((b) => b.type === "tool-call"), false);
+    const markers = allBlocks.filter((b) => b.type === "text" && /^\[tool-call: /.test(b.text));
+    check("slim: tool-call degraded to name markers", JSON.stringify(markers.map((b) => b.text)), JSON.stringify(["[tool-call: glob]", "[tool-call: write]"]));
+    check("slim: conversation text survives", allBlocks.some((b) => b.type === "text" && b.text === "checking"), true);
+    check("slim: emptied assistant message dropped", msgs.some((m) => Array.isArray(m.content) && m.content.length === 0), false);
+    const last = msgs[msgs.length - 1];
+    check("slim: final instruction message survives", typeof last?.content === "string" && last.content.startsWith(COMPACTION_SIGNATURE), true);
+    check("slim: system message survives", msgs[0]?.role === "system", true);
+  }
+  {
+    // Default (slimOversized off): messages untouched, tool-call/reasoning survive.
+    const init = slimInit("Qwen3.8-27B-GGUF", convoInitial);
+    check("slim off: untouched (default)", rewriteCompactionBody(init, POLICY), true);
+    const msgs = JSON.parse(init.body).messages;
+    const allBlocks = msgs.flatMap((m) => Array.isArray(m.content) ? m.content : []);
+    check("slim off: reasoning blocks survive", allBlocks.some((b) => b.type === "reasoning"), true);
+    check("slim off: tool-call blocks survive", allBlocks.some((b) => b.type === "tool-call"), true);
+  }
+  {
+    // Slimming applies to allow-listed models too (any model, gated by flag).
+    const init = slimInit("Qwen3.8-27B-GGUF", convoInitial);
+    const slimPolicy = { ...POLICY, slimOversized: true };
+    check("slim: applies to allow-listed model", rewriteCompactionBody(init, slimPolicy), true);
+    const allBlocks = JSON.parse(init.body).messages.flatMap((m) => Array.isArray(m.content) ? m.content : []);
+    check("slim: full wire still merged for listed model", (JSON.parse(init.body).chat_template_kwargs?.enable_thinking === false) && !allBlocks.some((b) => b.type === "reasoning"), true);
   }
 }
 
