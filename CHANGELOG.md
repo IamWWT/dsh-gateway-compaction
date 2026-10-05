@@ -1,5 +1,28 @@
 # Changelog
 
+## 2.0.0 (2026-10-05)
+
+**原生压缩重构（provider-neutral）**——不再劫持 fetch 给本地网关打补丁，改为在公开 DSH
+LLM waterfall（`ctx.llm`）上的原生中间件（`native-compaction.js`），配置收敛到 `config.js`
+的 `Config` schema（与设置页 `ui-fields.js` 生成字段一一对应，`cordis.patch.yml` 只做注册）。
+
+- **分片 map-reduce + 迭代收敛**：token 预算切片（`chunkRatio`/`headroomTokens`/`tokenSafetyFactor`），
+  每片轻量提取（EXTRACT_PROMPT：SESSION INTENT/SUMMARY/ARTIFACTS/NEXT STEPS），合并调用
+  迭代收敛（`maxMergeRounds`/`maxCalls`）；超出时逐轮收缩输入直至收敛或按预算裁剪。
+- **保尾双保险**：`keepRecentMessages`（原样消息条数）+ `keepRecentTokens`（最近 token 预算）——
+  最新事实/当前工作零损失进入最终合并。
+- **按模型路由**：`modelPolicies[]`（provider+model 级覆盖 effort/floor/slim/采样/chunking），
+  `summaryRoute` 指定摘要通道（provider/model），`contextWindows` 与 `fallbackWindow` 控制预算。
+- **安全与可观测**：`safetyRatio` 预留输出余量、`timeoutMs`/`totalTimeoutMs`/`retries` 超时重试、
+  每分片 `chunk i/n` 日志；`preprocessing`（工具参数/结果截断、丢思考块）在进预算前瘦身。
+- **事务化命令**（`transactions.js`）：`/gateway-compact`（手动压缩）、`/clear-context`
+  （硬重置，无 LLM 调用）——注册为 dsh compaction 扩展，宿主持有历史持久化。
+- **配置迁移**：旧 1.x 的 `chunking.enabled/ratio/…` 与 `slimOversized` 字段被 2.0 的
+  Config schema 接管，`cordis.patch.yml` 不再写入配置值（全默认由 `Config` 声明，设置页可改）。
+- 测试：`native.test.mjs` 13 断言 + `native-compaction.mjs`（volatile settings/bounded requests/
+  frozen input/传输）+ `auto-rescue` 36 + `host.test.mjs`（真实 Cordis+LlmRuntime 集成，
+  断言待修：fixture 假设单片消息 ≤5，native 分片是按 token 切的大块）。
+
 ## 1.5.2 (2026-10-05)
 
 **分片救援完善**（指令：保留最近 N 条、分片提示词优化；参考 agentscope-java

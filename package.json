@@ -1,7 +1,7 @@
 {
   "name": "dsh-gateway-compaction",
-  "version": "1.5.2",
-  "description": "DSH plugin (local Qwen3.8 gateways: llama.cpp/Unsloth Studio AND NInfer): thinking off for compaction-only calls via engine-appropriate wire fields (llama.cpp: chat_template_kwargs.enable_thinking; NInfer: reasoning_effort), non-thinking sampling parameters and a max_tokens floor; plus a chunked map-reduce rescue when the conversation is larger than the target model's context window (the 1M->250k model-switch 'cannot compact' case)",
+  "version": "2.0.0",
+  "description": "Provider-neutral DSH compaction: bounded chunked summaries, per-model budgets, native settings and safe durable transactions.",
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -31,15 +31,20 @@
   },
   "files": [
     "index.js",
+    "native-compaction.js",
+    "transactions.js",
+    "config.js",
     "client.js",
     "cordis.patch.yml",
     "README.md",
+    "README.en.md",
     "CHANGELOG.md",
     "LICENSE"
   ],
   "peerDependencies": {
-    "@deepseek-ai/schemastery": ">=3.18.0 <4.0.0-0",
-    "@deepseek-ai/dsh-settings": ">=0.1.1-rc.1 <0.1.2 || >=0.1.2-0 <0.2.0-0 || >=0.2.0-0 <0.3.0-0"
+    "@deepseek-ai/schemastery": ">=3.18.4 <4",
+    "@deepseek-ai/dsh-llm": ">=0.2.0-rc.2 <0.3.0-0",
+    "@deepseek-ai/dsh-compaction-basic": ">=0.2.0-rc.2 <0.3.0-0"
   },
   "dsh": {
     "bundle": {
@@ -47,11 +52,22 @@
     },
     "client": {
       "inject": [
-        "@deepseek-ai/dsh-client-ui-settings",
-        "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-ui-primitives"
+        "@deepseek-ai/dsh-client-ui-settings"
       ],
       "platform": "web"
     }
+  },
+  "scripts": {
+    "build": "node scripts/build-client.mjs",
+    "test": "node --test test/*.test.mjs && node test/native-compaction.mjs && node test/auto-rescue.mjs",
+    "check": "node scripts/check.mjs"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.4",
+    "@types/node": "24.13.3",
+    "typescript": "6.0.3",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "jsdom": "29.1.1"
   }
 }

@@ -1,7 +1,10 @@
-# 本地网关压缩与上下文管理插件（dsh-gateway-compaction）
+# 上下文压缩与预算管理插件（dsh-gateway-compaction）
 
-**一句话定位**：面向本地模型网关（llama.cpp / Unsloth Studio、NInfer）的 DSH **上下文压缩与预算管理**插件，
-默认面向 **Qwen3.8-27B GGUF**；在不改 DSH 上游源码的前提下，补齐「压缩请求修复 + 分片救援 + 自动压缩兜底 + 手动硬重置」。
+**一句话定位**：DSH **原生上下文压缩与预算管理**插件（2.0 起 provider-neutral，走公开
+`ctx.llm` waterfall 的 `native-compaction.js` 中间件，不再劫持 fetch）；分片 map-reduce +
+迭代收敛 + 保尾（`keepRecentMessages`/`keepRecentTokens`）+ 按模型策略路由（`modelPolicies`），
+配置全部可在插件设置页调整。1.x 面向本地网关（llama.cpp/Unsloth Studio、NInfer）的 wire
+修复与分片救援见历史版本。
 
 英文文档见 [`README.en.md`](./README.en.md)。
 
