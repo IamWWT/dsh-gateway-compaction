@@ -270,6 +270,47 @@ const DEFAULT_MERGE_MAX_TOKENS = 16384;
 const DEFAULT_MAX_CHUNKS = 8;
 /** Extra headroom (tokens) subtracted from the per-slice budget for estimation error. */
 const CHUNK_MARGIN_TOKENS = 1024;
+/**
+ * Default: the most recent N conversation messages are kept VERBATIM (never
+ * summarized) during a chunked rescue and re-attached to the merge call after
+ * the partial summaries — the tail survives lossy extraction, so the newest
+ * facts, the current work and the next step always stay intact. Borrowed from
+ * AgentScope's ConversationCompactor (`keepMessages`; its default is 20, we
+ * ship 15 per the product requirement). 0 disables.
+ */
+const DEFAULT_KEEP_RECENT_MESSAGES = 15;
+/**
+ * Last-resort context window (tokens) for a model whose window cannot be
+ * resolved any other way (no settings entry, no `/v1/models` disclosure, no
+ * dsh declaration): the goai/qwen3.8-max-0902 declared window. Used so an
+ * oversized compaction for such a model still gets chunked instead of being
+ * forwarded into a guaranteed overflow. The per-slice budget still applies a
+ * 0.7 ratio, leaving margin for a genuinely smaller real window.
+ */
+export const DEFAULT_CHUNK_WINDOW = 262144;
+/**
+ * Lightweight extraction instruction for ONE chunk (slice) of the map-reduce
+ * rescue, in the style of AgentScope's DEFAULT_SUMMARY_PROMPT: a chunk call
+ * does NOT run the full official checkpoint instruction — it extracts
+ * high-density context in a fixed four-section shape, and the MERGE call
+ * rebuilds the official checkpoint structure from the partials plus the
+ * verbatim tail. The full instruction text is reserved for the final merge.
+ */
+export const CHUNK_SUMMARY_INSTRUCTION = [
+  "You are a context-extraction assistant. The conversation below is ONE PART of a session too large to summarize in a single pass; a later merge step rebuilds the final checkpoint from all parts.",
+  "Extract the highest-quality, most relevant context from THIS PART ONLY.",
+  "Focus on facts, decisions, reasoning, rejected options, exact file paths, commands, ports, identifiers, numeric values, and the user's own words — never repeat tool payloads or thinking traces.",
+  "Structure your extraction using these sections (write \"None\" when a section is empty):",
+  "## SESSION INTENT",
+  "What the user is ultimately trying to achieve in this part.",
+  "## SUMMARY",
+  "The most important context, decisions, reasoning, and rejected options.",
+  "## ARTIFACTS",
+  "Files or resources created, modified, or accessed (with specific paths and changes).",
+  "## NEXT STEPS",
+  "Tasks still pending at the END of this part.",
+  "Respond ONLY with the extracted context, with no preamble or commentary."
+].join("\n");
 /** Interval between keep-alive pings on a synthetic stream while slices run. */
 const KEEPALIVE_MS = 15000;
 /** First keep-alive poll after the head chunk (short, so fast rescues stay snappy). */
@@ -331,7 +372,13 @@ const ChunkingConfig = z.object({
   /** Output cap (`max_tokens`) for the final merged checkpoint. Default `16384`. */
   mergeMaxTokens: z.number().default(DEFAULT_MERGE_MAX_TOKENS),
   /** Safety cap on partial summaries per rescue; a larger range fails open. Default `8`. */
-  maxChunks: z.number().default(DEFAULT_MAX_CHUNKS)
+  maxChunks: z.number().default(DEFAULT_MAX_CHUNKS),
+  /**
+   * Most recent N conversation messages kept VERBATIM (never summarized) in a
+   * chunked rescue, re-attached after the partial summaries in the merge call.
+   * Default `15` (AgentScope-style recent-tail retention). 0 disables.
+   */
+  keepRecentMessages: z.number().default(DEFAULT_KEEP_RECENT_MESSAGES)
 });
 
 /**
@@ -1470,10 +1517,10 @@ async function resolveChunkWindow(policy, body, input, originalFetch, ctx) {
   if (!missingWindowWarnings.has(model)) {
     missingWindowWarnings.add(model);
     ctx?.logger?.warn?.(
-      `gateway-compaction: model "${model}" has no resolvable context window (not set on the plugin settings page, no ${"/v1/models"} disclosure, no dsh model-config declaration); oversized compaction for it stays disabled. Set its context window on the plugin settings page, or declare contextWindow for "${model}" under its llm-pi-ai provider.`
+      `gateway-compaction: model "${model}" has no resolvable context window (not set on the plugin settings page, no ${"/v1/models"} disclosure, no dsh model-config declaration); falling back to the default ${DEFAULT_CHUNK_WINDOW}-token window so oversized compaction for it still gets chunked. Set its context window on the plugin settings page, or declare contextWindow for "${model}" under its llm-pi-ai provider, to plan against the real value.`
     );
   }
-  return undefined;
+  return { window: DEFAULT_CHUNK_WINDOW, source: "fallback" };
 }
 
 /**
@@ -1516,6 +1563,13 @@ export async function chunkedCompactionRescue(ctx, originalFetch, input, init, p
   const instructionText = messageText(last?.content);
   if (!instructionText.startsWith(COMPACTION_SIGNATURE)) return undefined;
   const rangeMessages = body.messages.slice(0, -1);
+  // AgentScope-style recency retention: the most recent `keepRecentMessages`
+  // messages survive VERBATIM (never summarized) and are re-attached after
+  // the partial summaries in the merge call, so the newest facts and the
+  // current-work state cannot be lost by lossy extraction. 0 disables.
+  const keepN = positiveInt(cfg.keepRecentMessages, DEFAULT_KEEP_RECENT_MESSAGES);
+  const keepTail = keepN > 0 && rangeMessages.length > keepN ? rangeMessages.slice(rangeMessages.length - keepN) : [];
+  const chunkRange = keepTail.length > 0 ? rangeMessages.slice(0, rangeMessages.length - keepN) : rangeMessages;
   // Leading system/developer messages are re-sent with EVERY internal call
   // (sliceMessages peels them into the prefix), so their cost comes out of
   // the per-slice budget too — otherwise every slice overflows by exactly the
@@ -1528,7 +1582,7 @@ export async function chunkedCompactionRescue(ctx, originalFetch, input, init, p
   }
   const prefixTokens = rangeMessages.slice(0, prefixEnd).reduce((sum, m) => sum + estimateMessageTokens(m), 0);
   const sliceBudget = Math.max(callBudget - estimateTextTokens(instructionText) - prefixTokens - CHUNK_MARGIN_TOKENS, 4096);
-  const sliced = sliceMessages(rangeMessages, sliceBudget);
+  const sliced = sliceMessages(chunkRange, sliceBudget);
   if (sliced === null || sliced.slices.length > cfg.maxChunks) {
     ctx.logger.warn(
       `gateway-compaction: compaction prompt (~${estimated} tokens) exceeds the chunk budget for "${body.model}" and cannot be split within maxChunks=${cfg.maxChunks}; forwarding the original request (it will likely overflow)`
@@ -1558,6 +1612,10 @@ export async function chunkedCompactionRescue(ctx, originalFetch, input, init, p
         role: "user",
         content: `Partial checkpoint ${i + 1} of ${n}:\n<compacted-summary>\n${partial}\n</compacted-summary>`
       })),
+      // The verbatim tail follows the partials in chronological order (it is
+      // the most recent part); the merge rules already say later = more
+      // recent, so the tail's facts win over any conflicting partial.
+      ...keepTail,
       { role: "user", content: instructionText }
     ];
   };
@@ -1584,7 +1642,7 @@ export async function chunkedCompactionRescue(ctx, originalFetch, input, init, p
     const partials = [];
     for (let i = 0; i < slices.length; i++) {
       ctx.logger.info(`gateway-compaction: summarizing slice ${i + 1}/${slices.length} (~${sliceTokens[i]} tokens)`);
-      const chunkBody = buildInternalBody(body, [...prefix, ...slices[i], { role: "user", content: instructionText }], cfg.chunkMaxTokens);
+      const chunkBody = buildInternalBody(body, [...prefix, ...slices[i], { role: "user", content: CHUNK_SUMMARY_INSTRUCTION }], cfg.chunkMaxTokens);
       const result = await withRetry(() => internalCall(originalFetch, baseReq, chunkBody));
       if (result.content.length === 0) throw new Error(`slice ${i + 1}/${slices.length} produced no summary text`);
       partials.push(result.content);
@@ -1690,6 +1748,18 @@ function installSamplingFetch(ctx, readPolicy) {
           );
         }
         applied += 1;
+        // Per-call evidence: the wire was applied to THIS body (model, rough
+        // token estimate, slimming flag) — a failed compaction afterwards can
+        // be matched to whether the plugin actually ran and at what input size.
+        try {
+          const body = JSON.parse(init.body);
+          const est = Array.isArray(body.messages) ? estimateBodyTokens(body) : 0;
+          ctx.logger.info(
+            `gateway-compaction: compaction body rewritten (model=${body.model ?? "?"}, estimated ${est} tokens, slim=${policy.slimOversized === true})`
+          );
+        } catch {
+          /* the body is not JSON: nothing to report */
+        }
         // Layer 5: when the rewritten prompt no longer fits one call for this
         // model, rescue it with a chunked map-reduce instead of forwarding an
         // unforwardable request. Any throw fails open to the original path.

@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.5.2 (2026-10-05)
+
+**分片救援完善**（指令：保留最近 N 条、分片提示词优化；参考 agentscope-java
+`ConversationCompactor` + `CompactionConfig`）：
+
+- **`keepRecentMessages`（v1.5.2 新增，chunking 配置，默认 15，设置页可改）**：分片时最近 N 条
+  消息**原样保留**（不经过有损摘要），直接并入最终合并调用——最新事实与当前进度零损失；只对
+  更早部分分片。机制参考 agentscope `keepMessages`（其默认 20，按产品要求取 15）；0 关闭。
+- **分片提示词优化**：新增 `CHUNK_SUMMARY_INSTRUCTION`（agentscope `DEFAULT_SUMMARY_PROMPT`
+  风格：明确的角色「context-extraction assistant」+ 四章节 SESSION INTENT / SUMMARY /
+  ARTIFACTS / NEXT STEPS + 「只输出提取内容」）。分片调用不再复用完整官方压缩指令（每片都
+  试图输出最终 checkpoint 骨架→重复且变长），改为轻量提取式；合并调用仍用官方指令产出最终
+  checkpoint。
+- **窗口兜底**：`resolveChunkWindow` 三链（设置→/v1/models 活查→dsh 声明）全 miss 时，回退
+  默认 262144-token 窗口（`DEFAULT_CHUNK_WINDOW`，goai/qwen3.8-max-0902 声明值）并告警
+  一次——未列模型/无披露的超大压缩也会分片，不再原样转发进必然 overflow。
+- **每请求生效日志**：fetch 层每次改写压缩体打一行（model / 估算 tokens / slim 标志），结束
+  「压缩失败但不知插件是否生效」的黑箱。
+- 实证：fork 实测 goai——窗口内 192K 输入 → 8888 字符完整 checkpoint（finish=stop）；全量
+  slim 310K → 网关接受但输出无框架 + 泄漏思考 263 字符 → 佐证分片 + 保尾的必要性。
+- 测试：新增 `test/chunking.mjs` 9 断言（mock fetch 捕获内部分片/合并：keepTail 进 merge 不进
+  slice、分片用 CHUNK_SUMMARY_INSTRUCTION、fallback 窗口触发 rescue）；window-resolution
+  「unresolvable」改断言（fallback 仍分片，不再禁用）；smoke 88 + client-smoke + prompt-sync +
+  preset-applicability + auto-rescue 全绿。
+
 ## 1.5.1 (2026-10-05)
 
 **修复「摘要被输出上限截断」**：1.5.0 重启后 wire 已生效（失败从「无文本摘要」变为

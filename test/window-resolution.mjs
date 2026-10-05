@@ -138,7 +138,7 @@ const probeCount = (log) => log.filter((u) => u === MODELS_URL).length
   // (Distinct from "M" above so earlier test resolutions cannot leak in via
   // the process-wide caches.)
   const res = await chunkedCompactionRescue(makeCtx(llm, warnings), fetch, CHAT_URL, { method: "POST", body: JSON.stringify(bigBody("U")), headers: {} }, policy({}))
-  check("unresolvable: rescue disabled (forwards the original request)", res === undefined)
+  check("unresolvable: fallback window still rescues (chunked, v1.5.2)", res !== undefined)
   check("unresolvable: warning names the model", warnings.length === 1 && warnings[0].includes('"U"'))
   const warnings2 = []
   await chunkedCompactionRescue(makeCtx(llm, warnings2), fetch, CHAT_URL, { method: "POST", body: JSON.stringify(bigBody("U")), headers: {} }, policy({}))

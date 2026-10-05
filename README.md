@@ -29,10 +29,14 @@
   1.5.1 起 `slimOversized: true`（patch 默认）：超满会话压缩前**规则瘦身**——丢思考块、工具调用
   降级为一行标记（结果走引擎 `toolHistory` 通道），`maxTokensFloor` 默认提到 32768，解决
   「summarization truncated at the token cap」。
+  1.5.2 起分片救援升级：**`keepRecentMessages`（默认 15，参考 AgentScope `keepMessages`）**分片时
+  最近 N 条原样保留进最终合并（最新事实/当前进度零损失）；**分片用轻量提取指令**（AgentScope
+  风格四章节）而非完整官方压缩指令；**窗口三链全 miss 回退 262144**——未列模型也分片而非转发进
+  overflow。
 - **服务端硬限制**（当前目标 NInfer 配置）：窗口 378144 / 默认最大输出 192000 / 安全余量 18908 → 最大输入 **167236** tokens，
   超出直接返回 `context_length_exceeded`，客户端必须在发请求前按同一预算计算压力。
 - 主要配置键（`$DSH_HOME/settings.yaml`，段名 `gateway-compaction`）：`matchAll`、`slimOversized`、`models`、`ninModels`、`maxTokensFloor`、
-  `wireReasoning`、`enableThinkingOff`、`chunking.contextWindows/chunkRatio/chunkMaxTokens/mergeMaxTokens/maxChunks`、
+  `wireReasoning`、`enableThinkingOff`、`chunking.{contextWindows,chunkRatio,chunkMaxTokens,mergeMaxTokens,maxChunks,keepRecentMessages}`、
   `command.enabled/newContext.enabled`、`autoCompaction.{enabled,thresholdRatio,retainRatio|retainTokens,maxTokens,compactionRetries,maxOverflowRetries}`。
 - **命名沿革**：原 `dsh-qwen38-gateway-compaction`，2026-09-19 起改名 `dsh-gateway-compaction`；
   从旧名升级需先把 `settings.yaml` 里的 `qwen38-gateway-compaction:` 段名改成 `gateway-compaction:`（内容不变），否则读不到旧配置。

@@ -75,8 +75,11 @@
         chunking:
           enabled: true
           # Exact model id -> context window (tokens), for both engines.
-          # Models not listed here are never chunked (fail open to the
-          # single-shot behavior). Set each to the window the gateway actually
+          # Models not listed here resolve automatically: live /v1/models
+          # probe, then the dsh model-config declaration, then (v1.5.2) a
+          # DEFAULT 262144-token fallback so an oversized compaction for an
+          # unresolvable model still gets chunked instead of forwarding into a
+          # guaranteed overflow. Set each to the window the gateway actually
           # runs with (llama.cpp: GET /v1/models -> details.n_ctx; NInfer:
           # its n_ctx).
           contextWindows:
@@ -96,6 +99,11 @@
           mergeMaxTokens: 16384
           # Safety cap on partial summaries per rescue; larger ranges fail open.
           maxChunks: 8
+          # AgentScope-style recency retention (v1.5.2): the most recent N
+          # conversation messages survive VERBATIM in a chunked rescue —
+          # never lossy-summarized — and are re-attached to the final merge,
+          # so the newest facts and current-work state cannot be lost. 0 off.
+          keepRecentMessages: 15
         # Manual commands: type /gateway-compact in any session to compact its
         # history right now (model-summarized, keeps information), or
         # /clear-context for a hard reset (no LLM call, instant, history

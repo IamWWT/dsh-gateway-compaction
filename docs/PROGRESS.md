@@ -8,8 +8,8 @@
 | 项 | 值 |
 |---|---|
 | 文档性质 | 进度真源 / 操作与状态记录 |
-| 对应版本 | **1.5.1**（以 `package.json` 为准） |
-| 状态 | 功能完成；**1.5.1 已装 desktop**（Windows profile `desktop`）**待重启验收**（obisdian 会话 `/gateway-compact` 成功压缩）；Ubuntu 3082 待重装 |
+| 对应版本 | **1.5.2**（以 `package.json` 为准） |
+| 状态 | 功能完成；**1.5.2 已装 desktop**（Windows profile `desktop`）**待重启验收**（obisdian 会话 `/gateway-compact` 成功压缩）；Ubuntu 3082 待重装 |
 | 维护者 | 本插件开发者（monorepo `dsh-plugins/dsh-gateway-compaction/`） |
 
 ## 一句话定位
@@ -116,3 +116,27 @@ Qwen3.8 本地网关（llama.cpp / NInfer）上的会话压缩修复插件：tgz
   - 保守 wire 补顶层 `enable_thinking: false`（OpenAI 兼容官方字段，双保险关思考）。
   - smoke 88 全绿（+16：slim 12 / extended 顶层字段 / floor）；client-smoke 全过。
   - **已打包 1.5.1 装 desktop（待重启验收）**；public 仓待同步。
+- **1.5.2（2026-10-05）**：分片救援完善（用户指令「保留最近 N 条、分片提示词优化」，参考
+  agentscope-java `ConversationCompactor`/`CompactionConfig`：
+  - **`keepRecentMessages`（chunking 配置，默认 15，设置页可改，参考 agentscope `keepMessages`
+    默认 20 而按产品要求取 15）**：分片时最近 N 条消息**原样保留**（不经摘要提取），直接并入最终
+    合并调用——最新事实/当前进度零损失；只对更早部分分片。
+  - **分片提示词优化**：新增 `CHUNK_SUMMARY_INSTRUCTION`（agentscope `DEFAULT_SUMMARY_PROMPT`
+    风格：角色「context-extraction assistant」+ 四章节 SESSION INTENT/SUMMARY/ARTIFACTS/
+    NEXT STEPS + 只输出提取内容）；分片调用不再复用完整官方压缩指令（每片输出最终骨架会造成
+    重复与变长），改为轻量提取式；合并调用仍用官方指令出最终 checkpoint；MERGE_PREAMBLE 的
+    merge 规则（recency wins/dedupe/union）天然覆盖原样尾部。
+  - **窗口兜底**：`resolveChunkWindow` 全链miss时返回默认 262144（`DEFAULT_CHUNK_WINDOW`，
+    goai/qwen3.8-max-0902 声明窗口）并告警一次——未列模型/无披露/无声明的超大压缩也会分片，
+    不再原样转发进必然 overflow；解释 5206 `pi-ai detected context overflow`（自动路径客户端
+    fetch 前拒绝，插件层不可达，依赖手动路径成功后上下文回落）。
+  - **每请求生效日志**：fetch 层每次改写压缩体打一行（model/估算 tokens/slim 标志）——下次失败
+    可直接核对插件是否生效与输入量级，不再黑箱。
+  - fork 实测（真实 goai 调用）：窗口内 192K 输入 → 8888 字符完整 checkpoint（finish=stop 无
+    截断）✓；全量 slim 310K → goai 接受但输出无框架+泄漏思考 → 佐证分片必要性。
+  - 测试：smoke 88 + client-smoke + window-resolution 10（unresolvable 改断言：fallback 仍分片）
+    + prompt-sync 3 + preset-applicability + auto-rescue 36 + **新增 chunking.mjs 9**（mock fetch
+    捕获内部分片/合并：keepTail 进 merge 不进 slice、分片用 CHUNK_SUMMARY_INSTRUCTION、
+    fallback 窗口触发）。
+  - **已打包 1.5.2 装 desktop（待重启验收）**；public 仓待同步。前提：重启脚本改用 detached
+    独立进程（agent 杀宿主=自杀，此前两次 kill 后 Start-Process 未执行）。
